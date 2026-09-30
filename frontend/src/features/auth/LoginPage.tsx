@@ -4,15 +4,15 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation } from '@tanstack/react-query'
-import { Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck, Sparkles, ArrowLeft } from 'lucide-react'
-import { login } from '../../api/auth'
+import axios from 'axios'
+import { Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck, ArrowLeft } from 'lucide-react'
+import { login, saveAuthSession } from '../../api/auth'
 import { cn } from '../../lib/utils'
 import { Button } from '../../components/ui/Button'
 
 const loginSchema = z.object({
-  email: z.string().email('Please enter a valid email address.'),
-  password: z.string().min(8, 'Password must be at least 8 characters.'),
-  remember: z.boolean().optional(),
+  email: z.string().trim().email('Please enter a valid email address.'),
+  password: z.string().min(1, 'Enter your password.'),
 })
 
 type LoginFormValues = z.infer<typeof loginSchema>
@@ -24,20 +24,15 @@ export default function LoginPage() {
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: 'admin@demo.test',
-      password: 'poss-demo-2026',
-      remember: true,
+      email: '',
+      password: '',
     },
   })
 
   const mutation = useMutation({
     mutationFn: login,
     onSuccess: (data) => {
-      localStorage.setItem('pos_token', data.token)
-      localStorage.setItem('pos_user', JSON.stringify(data.user))
-      if (data.businesses.length > 0) {
-        localStorage.setItem('pos_business_id', data.businesses[0].id)
-      }
+      saveAuthSession({ token: data.token, user: data.user, business: data.businesses[0] })
       window.dispatchEvent(new Event('pos-auth-changed'))
       navigate('/dashboard', { replace: true })
     },
@@ -51,9 +46,12 @@ export default function LoginPage() {
     })
   }
 
-  function fillDemoCredentials() {
-    form.setValue('email', 'admin@demo.test')
-    form.setValue('password', 'poss-demo-2026')
+  function getLoginError(error: unknown): string {
+    if (!axios.isAxiosError(error)) return 'Unable to sign in. Please try again.'
+    if (error.response?.status === 422) return 'Email or password is incorrect.'
+    if (error.response?.status === 429) return 'Too many sign-in attempts. Wait a minute and try again.'
+    if (error.response?.status === 503 || !error.response) return 'The service is unavailable. Check your connection and try again.'
+    return 'We could not sign you in. Please try again.'
   }
 
   return (
@@ -79,23 +77,6 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Demo Credentials Quick-Fill Banner */}
-      <div className="mb-6 rounded-2xl border border-lime-dark/30 bg-lime/15 p-3.5 text-sm text-graphite">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-graphite shrink-0" />
-            <span className="text-xs font-semibold">Demo credentials pre-filled</span>
-          </div>
-          <button
-            type="button"
-            onClick={fillDemoCredentials}
-            className="text-xs font-bold underline underline-offset-2 hover:text-graphite cursor-pointer"
-          >
-            Refill demo
-          </button>
-        </div>
-      </div>
-
       <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)} noValidate>
         <div>
           <label htmlFor="email" className="mb-1.5 block text-xs font-bold text-graphite uppercase tracking-wider">
@@ -107,7 +88,7 @@ export default function LoginPage() {
               id="email"
               type="email"
               autoComplete="email"
-              placeholder="e.g. admin@demo.test"
+              placeholder="name@business.com"
               className={cn(
                 'w-full rounded-xl border bg-white pl-10 pr-4 py-3 text-sm text-graphite outline-none transition focus:border-lime focus:ring-2 focus:ring-lime/30',
                 form.formState.errors.email ? 'border-danger bg-danger/5' : 'border-graphite/15',
@@ -151,23 +132,9 @@ export default function LoginPage() {
           )}
         </div>
 
-        <div className="flex items-center justify-between text-xs font-medium pt-1">
-          <label className="flex items-center gap-2 text-graphite/80 cursor-pointer">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-graphite/20 text-lime focus:ring-lime"
-              {...form.register('remember')}
-            />
-            Remember me
-          </label>
-          <Link to="/forgot-password" className="text-graphite/70 hover:text-graphite underline-offset-4 hover:underline">
-            Forgot password?
-          </Link>
-        </div>
-
         {mutation.isError && (
           <div className="rounded-xl border border-danger/20 bg-danger/10 p-3 text-xs text-danger font-medium">
-            Could not sign you in. Please check your credentials or click "Refill demo" to use test account.
+            {getLoginError(mutation.error)}
           </div>
         )}
 

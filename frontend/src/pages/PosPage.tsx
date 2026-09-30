@@ -1,22 +1,56 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Minus, Plus, Printer, Search, Trash2 } from 'lucide-react'
-import { useDeferredValue, useState } from 'react'
-import { createSale, getProducts, type Product, type Sale } from '../api/commerce'
-import { Button } from '../components/ui/Button'
-import { Card } from '../components/ui/Card'
+import {
+  Banknote,
+  Barcode,
+  Boxes,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
+  CreditCard,
+  Minus,
+  Plus,
+  Printer,
+  Search,
+  Smartphone,
+  Store,
+  Tag,
+  Trash2,
+  WalletCards,
+  X,
+} from 'lucide-react'
+import { useDeferredValue, useState, type KeyboardEvent } from 'react'
+import {
+  closeCashRegister,
+  createSale,
+  getCashRegisterStatus,
+  getCategories,
+  getProductByBarcode,
+  getProducts,
+  openCashRegister,
+  type Product,
+  type Sale,
+} from '../api/commerce'
 
 export default function PosPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
+  const [scanMessage, setScanMessage] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState('All items')
   const [cart, setCart] = useState<Record<number, number>>({})
   const [selectedProducts, setSelectedProducts] = useState<Record<number, Product>>({})
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit'>('cash')
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'mpesa' | 'card' | 'bank' | 'credit'>('cash')
   const [receipt, setReceipt] = useState<Sale | null>(null)
+  const [openingBalance, setOpeningBalance] = useState('')
+  const [actualCash, setActualCash] = useState('')
+  const [showCloseForm, setShowCloseForm] = useState(false)
   const deferredSearch = useDeferredValue(search)
   const productsQuery = useQuery({
     queryKey: ['pos-products', deferredSearch],
     queryFn: () => getProducts(deferredSearch, true),
   })
+  const categoriesQuery = useQuery({ queryKey: ['categories'], queryFn: getCategories })
+  const registerQuery = useQuery({ queryKey: ['cash-register'], queryFn: getCashRegisterStatus, retry: 1 })
   const checkoutMutation = useMutation({
     mutationFn: createSale,
     onSuccess: async (sale) => {
@@ -30,14 +64,35 @@ export default function PosPage() {
       ])
     },
   })
+  const openRegisterMutation = useMutation({
+    mutationFn: openCashRegister,
+    onSuccess: async () => {
+      setOpeningBalance('')
+      await queryClient.invalidateQueries({ queryKey: ['cash-register'] })
+    },
+  })
+  const closeRegisterMutation = useMutation({
+    mutationFn: closeCashRegister,
+    onSuccess: async () => {
+      setShowCloseForm(false)
+      setActualCash('')
+      await queryClient.invalidateQueries({ queryKey: ['cash-register'] })
+    },
+  })
 
   const products = productsQuery.data ?? []
+  const categories = categoriesQuery.data ?? []
+  const visibleProducts = selectedCategory === 'All items'
+    ? products
+    : products.filter((product) => product.category === selectedCategory)
   const productsById = new Map(products.map((product) => [product.id, product]))
   const cartLines = Object.entries(cart).flatMap(([productId, quantity]) => {
     const product = productsById.get(Number(productId)) ?? selectedProducts[Number(productId)]
     return product ? [{ product, quantity }] : []
   })
   const subtotalCents = cartLines.reduce((total, line) => total + toCents(line.product.unit_price) * line.quantity, 0)
+  const itemCount = cartLines.reduce((count, line) => count + line.quantity, 0)
+  const registerOpen = registerQuery.data?.is_open ?? false
 
   function addProduct(product: Product) {
     setReceipt(null)
@@ -48,7 +103,42 @@ export default function PosPage() {
     }))
   }
 
+  async function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== 'Enter' || !search.trim()) {
+      return
+    }
+
+    event.preventDefault()
+    const scannedBarcode = search.trim()
+
+    try {
+      const product = await getProductByBarcode(scannedBarcode)
+
+      if (!product) {
+        setScanMessage(`No active product found for barcode ${scannedBarcode}.`)
+        return
+      }
+
+      if (product.quantity_on_hand === 0) {
+        setScanMessage(`${product.name} is out of stock.`)
+        return
+      }
+
+      if ((cart[product.id] ?? 0) >= product.quantity_on_hand) {
+        setScanMessage(`No more ${product.name} is available in stock.`)
+        return
+      }
+
+      addProduct(product)
+      setSearch('')
+      setScanMessage(`${product.name} added to the basket.`)
+    } catch {
+      setScanMessage('The barcode could not be checked. Verify the API connection and try again.')
+    }
+  }
+
   function changeQuantity(product: Product, change: number) {
+    setReceipt(null)
     setCart((current) => {
       const nextQuantity = (current[product.id] ?? 0) + change
       if (nextQuantity <= 0) {
@@ -69,93 +159,146 @@ export default function PosPage() {
   }
 
   return (
-    <section className="module-page">
-      <div className="mb-6 flex items-center justify-between gap-4">
+    <section className="pos-workspace">
+      <header className="pos-heading">
         <div>
-          <p className="eyebrow">Checkout</p>
-          <h1>Point of Sale</h1>
+          <p className="pos-kicker">POSS · CHECKOUT</p>
+          <h1>Make a sale</h1>
+          <p className="pos-subtitle">Build a basket, choose a tender, and keep the line moving.</p>
         </div>
-        <Button variant="primary">Complete sale</Button>
-      </div>
+        <div className={`pos-shift-pill ${registerOpen ? 'is-open' : ''}`}>
+          <span className="pos-shift-dot" />
+          <span>{registerOpen ? 'Register open' : registerQuery.isPending ? 'Checking register' : 'Register closed'}</span>
+          {registerOpen && <small>{registerQuery.data?.register.name}</small>}
+        </div>
+      </header>
 
-      <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <Card className="p-4">
-          <label className="mb-4 flex items-center gap-3 rounded-xl border border-graphite/10 px-4 py-3">
-            <Search className="h-4 w-4 text-graphite/50" />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Search products or scan barcode" />
-          </label>
-          {productsQuery.isError && <p role="alert" className="mb-4 text-sm text-danger">Products could not be loaded. Check the API connection and business context.</p>}
+      <div className="pos-layout">
+        <div className="pos-catalog">
+          <div className="pos-catalog-toolbar">
+            <label className="pos-search">
+              <Search size={18} />
+              <input value={search} onChange={(event) => { setSearch(event.target.value); setScanMessage('') }} onKeyDown={handleSearchKeyDown} placeholder="Search name, SKU, or scan barcode" aria-label="Search products or scan a barcode" />
+              {search ? <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={16} /></button> : <span><Barcode size={17} /> Scan</span>}
+            </label>
+            <div className="pos-result-count">{visibleProducts.length} items</div>
+          </div>
+          {scanMessage && <p className="pos-inline-note" role="status">{scanMessage}</p>}
+
+          <nav className="pos-categories" aria-label="Product categories">
+            <button className={selectedCategory === 'All items' ? 'active' : ''} type="button" onClick={() => setSelectedCategory('All items')}>
+              <Boxes size={16} /> All items
+            </button>
+            {categories.map((category) => (
+              <button className={selectedCategory === category.name ? 'active' : ''} key={category.id} type="button" onClick={() => setSelectedCategory(category.name)}>
+                <Tag size={15} /> {category.name}
+              </button>
+            ))}
+          </nav>
+
+          {productsQuery.isError && <div role="alert" className="pos-alert"><CircleAlert size={17} /> Products could not be loaded. Check the API connection and business context.</div>}
+          {categoriesQuery.isError && <div role="status" className="pos-inline-note">Categories are unavailable. You can still browse all items.</div>}
           {productsQuery.isPending ? (
-            <p className="p-6 text-center text-sm text-graphite/60">Loading products...</p>
-          ) : products.length === 0 ? (
-            <p className="p-6 text-center text-sm text-graphite/60">No active products with this search.</p>
+            <div className="pos-empty"><span className="pos-empty-icon"><Boxes size={22} /></span><strong>Loading your catalog</strong><span>Available items will appear here.</span></div>
+          ) : visibleProducts.length === 0 ? (
+            <div className="pos-empty"><span className="pos-empty-icon"><Search size={22} /></span><strong>{products.length ? 'No items in this category' : 'Your catalog is empty'}</strong><span>{products.length ? 'Choose another category or clear your search.' : 'Add active products with stock to start selling.'}</span></div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {products.map((product) => (
-                <button key={product.id} type="button" disabled={product.quantity_on_hand === 0} onClick={() => addProduct(product)} className="rounded-xl border border-graphite/10 bg-white p-4 text-left transition hover:border-lime hover:bg-lime/5 disabled:cursor-not-allowed disabled:opacity-50">
-                  <p className="text-base font-bold text-graphite">{product.name}</p>
-                  <p className="mt-1 text-xs text-graphite/55">{product.sku}</p>
-                  <div className="mt-4 flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-graphite">KES {product.unit_price}</span>
-                    <span className="text-xs text-graphite/60">{product.quantity_on_hand} in stock</span>
-                  </div>
+            <div className="pos-product-grid">
+              {visibleProducts.map((product) => (
+                <button key={product.id} type="button" disabled={product.quantity_on_hand === 0} onClick={() => addProduct(product)} className="pos-product-card">
+                  <span className="pos-product-mark"><Store size={18} /></span>
+                  <span className="pos-product-copy"><strong>{product.name}</strong><small>{product.category || product.sku}</small></span>
+                  <span className="pos-product-bottom"><strong>{formatKes(toCents(product.unit_price))}</strong><small className={product.quantity_on_hand <= product.reorder_level ? 'low-stock' : ''}>{product.quantity_on_hand} in stock</small></span>
+                  <span className="pos-add-mark"><Plus size={16} /></span>
                 </button>
               ))}
             </div>
           )}
-        </Card>
+        </div>
 
-        <Card className="p-5">
-          <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-graphite">Cart</h2>
-            <span className="rounded-full bg-lime/20 px-2 py-1 text-xs font-bold text-graphite">{cartLines.reduce((count, line) => count + line.quantity, 0)} items</span>
+        <aside className="pos-checkout">
+          <div className="pos-cart-heading">
+            <div><p className="pos-kicker">CURRENT ORDER</p><h2>Basket <span>{itemCount}</span></h2></div>
+            {cartLines.length > 0 && <button className="pos-clear-button" type="button" onClick={() => { setCart({}); setReceipt(null) }}>Clear all</button>}
           </div>
 
-          <div className="space-y-3">
+          <div className="pos-cart-lines">
             {cartLines.map(({ product, quantity }) => (
-              <div key={product.id} className="flex items-center justify-between gap-3 rounded-xl border border-graphite/10 p-3">
-                <div>
-                  <p className="font-medium text-graphite">{product.name}</p>
-                  <p className="text-xs text-graphite/60">KES {product.unit_price} each</p>
+              <div key={product.id} className="pos-cart-line">
+                <div className="pos-line-info"><strong>{product.name}</strong><small>{formatKes(toCents(product.unit_price))} each</small></div>
+                <div className="pos-quantity-control">
+                  <button type="button" title="Decrease quantity" aria-label={`Decrease ${product.name}`} onClick={() => changeQuantity(product, -1)}><Minus size={13} /></button>
+                  <span>{quantity}</span>
+                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={quantity >= product.quantity_on_hand} onClick={() => changeQuantity(product, 1)}><Plus size={13} /></button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" title="Decrease quantity" aria-label={`Decrease ${product.name}`} onClick={() => changeQuantity(product, -1)} className="grid h-8 w-8 place-items-center rounded-lg border border-graphite/10"><Minus size={14} /></button>
-                  <span className="min-w-5 text-center text-sm font-semibold">{quantity}</span>
-                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={quantity >= product.quantity_on_hand} onClick={() => changeQuantity(product, 1)} className="grid h-8 w-8 place-items-center rounded-lg border border-graphite/10 disabled:opacity-40"><Plus size={14} /></button>
-                  <button type="button" title="Remove from cart" aria-label={`Remove ${product.name}`} onClick={() => changeQuantity(product, -quantity)} className="grid h-8 w-8 place-items-center rounded-lg text-danger"><Trash2 size={14} /></button>
-                </div>
+                <strong className="pos-line-total">{formatKes(toCents(product.unit_price) * quantity)}</strong>
+                <button className="pos-remove-line" type="button" title="Remove item" aria-label={`Remove ${product.name}`} onClick={() => changeQuantity(product, -quantity)}><Trash2 size={15} /></button>
               </div>
             ))}
-            {cartLines.length === 0 && <p className="rounded-xl border border-dashed border-graphite/15 p-6 text-center text-sm text-graphite/55">Add products to begin a sale.</p>}
+            {cartLines.length === 0 && <div className="pos-cart-empty"><span><ShoppingBasketIcon /></span><strong>Your basket is ready</strong><small>Select an item to add it to this sale.</small></div>}
           </div>
 
-          <div className="mt-6 space-y-3 border-t border-graphite/10 pt-4 text-sm text-graphite/70">
-            <div className="flex justify-between text-base font-black text-graphite"><span>Subtotal</span><span>{formatKes(subtotalCents)}</span></div>
-            <label className="grid gap-1 text-xs font-medium text-graphite/70">Payment method
-              <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'cash' | 'credit')} className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5 text-sm text-graphite">
-                <option value="cash">Cash</option>
-                <option value="credit">Store credit</option>
-              </select>
-            </label>
+          <div className="pos-payment-area">
+            <div className="pos-total-row"><span>Subtotal <small>({itemCount} items)</small></span><strong>{formatKes(subtotalCents)}</strong></div>
+            <div className="pos-total-row pos-grand-total"><span>Total due</span><strong>{formatKes(subtotalCents)}</strong></div>
+            <fieldset className="pos-tender-options">
+              <legend>Payment method</legend>
+              {[
+                { value: 'cash', label: 'Cash', icon: Banknote },
+                { value: 'mpesa', label: 'M-Pesa', icon: Smartphone },
+                { value: 'card', label: 'Card', icon: CreditCard },
+                { value: 'bank', label: 'Bank', icon: WalletCards },
+                { value: 'credit', label: 'Credit', icon: Clock3 },
+              ].map(({ value, label, icon: Icon }) => (
+                <button key={value} className={paymentMethod === value ? 'selected' : ''} type="button" aria-pressed={paymentMethod === value} onClick={() => setPaymentMethod(value as typeof paymentMethod)}>
+                  <Icon size={16} /><span>{label}</span>{paymentMethod === value && <Check size={13} />}
+                </button>
+              ))}
+            </fieldset>
+            {checkoutMutation.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Sale failed. Stock may have changed; try again.</div>}
+            {registerQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Register status could not be checked.</div>}
+            <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen} onClick={checkout}>
+              <span>{checkoutMutation.isPending ? 'Processing sale...' : paymentMethod === 'credit' ? 'Record credit sale' : 'Charge customer'}</span>
+              <span>{checkoutMutation.isPending ? null : <>{formatKes(subtotalCents)} <ChevronRight size={17} /></>}</span>
+            </button>
+            {!registerOpen && !registerQuery.isPending && <p className="pos-gate-note">Open the register below before completing a sale.</p>}
           </div>
 
-          {checkoutMutation.isError && <p role="alert" className="mt-4 text-sm text-danger">Checkout failed. Stock may have changed; refresh products and try again.</p>}
-          <Button className="mt-5 w-full" disabled={!cartLines.length || checkoutMutation.isPending} onClick={checkout}>
-            {checkoutMutation.isPending ? 'Processing...' : paymentMethod === 'credit' ? 'Record credit sale' : 'Complete cash sale'}
-          </Button>
+          {receipt && <div className="pos-receipt">
+            <div className="pos-receipt-icon"><Check size={17} /></div>
+            <div><strong>Sale recorded</strong><small>{receipt.receipt_number} · {receipt.status}</small></div>
+            <button type="button" onClick={() => window.print()} aria-label="Print receipt" title="Print receipt"><Printer size={17} /></button>
+          </div>}
 
-          {receipt && (
-            <div className="mt-5 rounded-xl border border-lime/50 bg-lime/10 p-4">
-              <p className="text-sm font-bold text-graphite">Sale recorded</p>
-              <p className="mt-1 text-xs text-graphite/70">{receipt.receipt_number} · {receipt.status}</p>
-              <p className="mt-2 text-lg font-black text-graphite">KES {receipt.total}</p>
-              <button type="button" onClick={() => window.print()} className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-graphite"><Printer size={15} /> Print receipt</button>
-            </div>
-          )}
-        </Card>
+          <div className="pos-register-card">
+            <div className="pos-register-heading"><span className="pos-register-icon"><Clock3 size={17} /></span><div><strong>{registerOpen ? 'Active shift' : 'Start your shift'}</strong><small>{registerQuery.data?.register.name ?? 'Main counter'}</small></div>{registerOpen && <span className="pos-open-label">OPEN</span>}</div>
+            {registerQuery.isPending ? <p className="pos-register-message">Checking register status...</p> : registerQuery.isError ? <p className="pos-register-message">Register details are unavailable. Refresh to try again.</p> : registerOpen ? (
+              showCloseForm ? (
+                <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); closeRegisterMutation.mutate({ actual_cash: Number(actualCash) }) }}>
+                  <label>Counted cash<input type="number" min="0" step="0.01" required value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder="0.00" /></label>
+                  {closeRegisterMutation.isError && <p role="alert">Could not close this shift. Check the counted amount and retry.</p>}
+                  <div><button type="button" className="pos-cancel-button" onClick={() => setShowCloseForm(false)}>Cancel</button><button type="submit" disabled={closeRegisterMutation.isPending || cartLines.length > 0}>{closeRegisterMutation.isPending ? 'Closing...' : 'Close shift'}</button></div>
+                  {cartLines.length > 0 && <small>Complete or clear the basket before closing.</small>}
+                </form>
+              ) : (
+                <div className="pos-register-active"><span>Float {formatKes(toCents(registerQuery.data?.current_session?.opening_balance ?? '0'))}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
+              )
+            ) : (
+              <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0) }) }}>
+                <label>Opening float<input type="number" min="0" step="0.01" required value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} placeholder="0.00" /></label>
+                {openRegisterMutation.isError && <p role="alert">Could not open the register. Please retry.</p>}
+                <button type="submit" disabled={openRegisterMutation.isPending}>{openRegisterMutation.isPending ? 'Opening...' : 'Open register'} <ChevronRight size={14} /></button>
+              </form>
+            )}
+          </div>
+        </aside>
       </div>
     </section>
   )
+}
+
+function ShoppingBasketIcon() {
+  return <Boxes size={21} />
 }
 
 function toCents(amount: string): number {

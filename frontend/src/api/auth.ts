@@ -20,6 +20,26 @@ export interface AuthPayload {
   businesses: BusinessMembership[]
 }
 
+export function saveAuthSession(session: {
+  token: string
+  user: AuthUser
+  business?: Pick<BusinessMembership, 'id' | 'name'> & { role?: string }
+}): void {
+  localStorage.setItem('pos_token', session.token)
+  localStorage.setItem('pos_user', JSON.stringify(session.user))
+
+  if (session.business) {
+    localStorage.setItem('pos_business_id', session.business.id)
+    localStorage.setItem('pos_business_name', session.business.name)
+    localStorage.setItem('pos_user_role', session.business.role ?? 'member')
+    return
+  }
+
+  localStorage.removeItem('pos_business_id')
+  localStorage.removeItem('pos_business_name')
+  localStorage.removeItem('pos_user_role')
+}
+
 export interface LoginRequest {
   email: string
   password: string

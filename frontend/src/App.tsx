@@ -24,8 +24,9 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { logout } from './api/auth'
+import { getCurrentBusiness, logout } from './api/auth'
 import { getApiHealth } from './api/client'
+import { getInventory, getReportSummary, getSales } from './api/commerce'
 import AuthLayout from './features/auth/AuthLayout'
 import EmailVerificationPage from './features/auth/EmailVerificationPage'
 import ForgotPasswordPage from './features/auth/ForgotPasswordPage'
@@ -40,6 +41,8 @@ import ResetPasswordPage from './features/auth/ResetPasswordPage'
 import LandingPage from './pages/LandingPage'
 import ReportsPage from './pages/ReportsPage'
 import SalesPage from './pages/SalesPage'
+import StaffPage from './pages/StaffPage'
+import { getInitials } from './lib/utils'
 
 const navigation = [
   { label: 'Overview', to: '/dashboard', icon: LayoutDashboard },
@@ -60,6 +63,7 @@ const pages: Record<string, string> = {
   '/customers': 'Customers',
   '/purchases': 'Purchases',
   '/reports': 'Reports',
+  '/team': 'Team',
   '/settings': 'Settings',
 }
 
@@ -74,22 +78,30 @@ function ApiStatus() {
   )
 }
 
-function Dashboard() {
+function Dashboard({ userName, businessName }: { userName: string; businessName: string }) {
   const { data: health, isSuccess } = useQuery({ queryKey: ['api-health'], queryFn: getApiHealth, retry: 1 })
+  const summaryQuery = useQuery({ queryKey: ['report-summary', '7days'], queryFn: () => getReportSummary('7days'), retry: 1 })
+  const salesQuery = useQuery({ queryKey: ['sales'], queryFn: getSales, retry: 1 })
+  const inventoryQuery = useQuery({ queryKey: ['inventory'], queryFn: getInventory, retry: 1 })
+  const summary = summaryQuery.data
+  const recentSales = salesQuery.data?.slice(0, 3) ?? []
+  const lowStockItems = inventoryQuery.data?.filter((item) => item.is_low_stock).slice(0, 3) ?? []
+  const firstName = userName.trim().split(/\s+/)[0] || 'there'
+  const [todayLabel] = useState(() => new Intl.DateTimeFormat('en-KE', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()))
   const metrics = [
-    { label: "Today's sales", icon: CreditCard, note: 'Sales data will appear here' },
-    { label: 'Transactions', icon: Activity, note: 'Transaction count will appear here' },
-    { label: "Today's profit", icon: ChartNoAxesCombined, note: 'Profit data will appear here' },
-    { label: 'Low stock items', icon: Boxes, note: 'Inventory data will appear here' },
+    { label: "Today's sales", icon: CreditCard, value: summary ? formatKes(summary.today.revenue) : '—', note: 'Confirmed revenue' },
+    { label: 'Transactions', icon: Activity, value: summary ? String(summary.today.transactions) : '—', note: 'Completed today' },
+    { label: "Today's profit", icon: ChartNoAxesCombined, value: summary ? formatKes(summary.today.profit_estimate) : '—', note: 'Estimated margin' },
+    { label: 'Low stock items', icon: Boxes, value: summary ? String(summary.inventory.low_stock_count) : '—', note: 'At or below reorder level' },
   ]
 
   return (
     <div className="dashboard-page">
       <section className="welcome-row">
         <div>
-          <p className="eyebrow">MONDAY, SEPTEMBER 28</p>
-          <h1>Your business, at a glance.</h1>
-          <p className="welcome-copy">A clear view of the day starts here.</p>
+          <p className="eyebrow">{todayLabel.toUpperCase()}</p>
+          <h1>Welcome back, {firstName}.</h1>
+          <p className="welcome-copy">Here is what is happening at {businessName}.</p>
         </div>
         <Link className="primary-button" to="/pos">
           <ShoppingCart size={17} />
@@ -98,13 +110,13 @@ function Dashboard() {
       </section>
 
       <section aria-label="Business metrics" className="metric-grid">
-        {metrics.map(({ label, icon: Icon, note }, index) => (
+        {metrics.map(({ label, icon: Icon, value, note }, index) => (
           <article className={`metric-card metric-${index}`} key={label}>
             <div className="metric-top">
               <span>{label}</span>
               <Icon size={17} />
             </div>
-            <p className="metric-value">—</p>
+            <p className="metric-value">{summaryQuery.isError ? 'Unavailable' : value}</p>
             <p className="metric-note">{note}</p>
           </article>
         ))}
@@ -121,15 +133,25 @@ function Dashboard() {
               Last 7 days <ChevronDown size={14} />
             </button>
           </div>
-          <div className="chart-empty">
-            <div className="chart-mark">
-              <ChartNoAxesCombined size={23} />
-            </div>
-            <strong>Your sales trend will take shape here</strong>
-            <span>Complete sales to see performance over time.</span>
-            <div className="chart-baseline" aria-hidden="true">
-              {[1, 2, 3, 4, 5, 6, 7].map((n) => <i key={n} />)}
-            </div>
+          <div className="sales-trend" aria-label="Sales totals by day for the last seven days">
+            {summary?.sales_trend.length ? summary.sales_trend.slice(-7).map((day) => {
+              const maxRevenue = Math.max(...summary.sales_trend.map((entry) => entry.total), 1)
+              return (
+                <div className="trend-day" key={day.date} title={`${day.date}: ${formatKes(day.total)}`}>
+                  <span className="trend-bar" style={{ height: `${Math.max(8, (day.total / maxRevenue) * 100)}%` }} />
+                  <small>{new Date(`${day.date}T00:00:00`).toLocaleDateString('en-KE', { weekday: 'short' })}</small>
+                </div>
+              )
+            }) : (
+              <div className="chart-empty">
+                <div className="chart-mark"><ChartNoAxesCombined size={23} /></div>
+                <strong>{summaryQuery.isPending ? 'Loading sales activity' : 'No sales in this period'}</strong>
+                <span>{summaryQuery.isError ? 'Sales performance could not be loaded.' : 'Complete a sale to start your trend.'}</span>
+              </div>
+            )}
+            {summary?.sales_trend.length ? (
+              <div className="trend-caption"><strong>{formatKes(summary.period.revenue)}</strong><span>Last 7 days · {summary.period.transactions} transactions</span></div>
+            ) : null}
           </div>
         </article>
 
@@ -144,11 +166,11 @@ function Dashboard() {
           <div className="status-list">
             <div><span>REST API</span><strong>{isSuccess ? 'Online' : 'Checking'}</strong></div>
             <div><span>API version</span><strong>{health?.version ?? 'v1'}</strong></div>
-            <div><span>Business data</span><strong>Not connected</strong></div>
+            <div><span>Business data</span><strong>{summaryQuery.isSuccess ? 'Connected' : summaryQuery.isPending ? 'Checking' : 'Unavailable'}</strong></div>
           </div>
           <div className="setup-note">
             <Activity size={16} />
-            <p>Core services are ready. Business modules will connect here as they are enabled.</p>
+            <p>{summaryQuery.isError ? 'The business data service could not be reached.' : 'Sales and inventory are synced from your business workspace.'}</p>
           </div>
         </article>
       </section>
@@ -164,11 +186,9 @@ function Dashboard() {
               View sales <ArrowUpRight size={14} />
             </Link>
           </div>
-          <div className="empty-state">
-            <div className="empty-icon"><CreditCard size={19} /></div>
-            <strong>No sales recorded yet</strong>
-            <span>Completed transactions will appear here.</span>
-          </div>
+          {salesQuery.isError ? <div className="empty-state"><strong>Sales could not be loaded</strong><span>Check the API connection and business context.</span></div> : recentSales.length ? (
+            <div className="dashboard-record-list">{recentSales.map((sale) => <div key={sale.id}><span><strong>{sale.receipt_number}</strong><small>{new Date(sale.created_at).toLocaleString()}</small></span><b>{formatKes(Number(sale.total) * 100)}</b></div>)}</div>
+          ) : <div className="empty-state"><div className="empty-icon"><CreditCard size={19} /></div><strong>{salesQuery.isPending ? 'Loading sales' : 'No sales recorded yet'}</strong><span>Completed transactions will appear here.</span></div>}
         </article>
 
         <article className="panel stock-panel">
@@ -181,17 +201,19 @@ function Dashboard() {
               <ArrowUpRight size={16} />
             </Link>
           </div>
-          <div className="empty-state">
-            <div className="empty-icon"><Boxes size={20} /></div>
-            <strong>Nothing to flag</strong>
-            <span>Stock alerts appear once inventory is connected.</span>
-          </div>
+          {inventoryQuery.isError ? <div className="empty-state"><strong>Inventory could not be loaded</strong><span>Check the API connection and business context.</span></div> : lowStockItems.length ? (
+            <div className="dashboard-record-list">{lowStockItems.map((item) => <div key={item.product_id}><span><strong>{item.name}</strong><small>{item.sku}</small></span><b className="stock-warning">{item.quantity_on_hand} left</b></div>)}</div>
+          ) : <div className="empty-state"><div className="empty-icon"><Boxes size={20} /></div><strong>{inventoryQuery.isPending ? 'Checking stock' : 'Nothing to flag'}</strong><span>Products at their reorder level appear here.</span></div>}
         </article>
       </section>
 
       <p className="dashboard-footnote"><i /> Figures update from confirmed transactions only</p>
     </div>
   )
+}
+
+function formatKes(amount: number): string {
+  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES', maximumFractionDigits: 0 }).format(amount)
 }
 
 function ModulePage({ title }: { title: string }) {
@@ -216,7 +238,23 @@ function clearAuthSession() {
   localStorage.removeItem('pos_token')
   localStorage.removeItem('pos_user')
   localStorage.removeItem('pos_business_id')
+  localStorage.removeItem('pos_business_name')
+  localStorage.removeItem('pos_user_role')
   window.dispatchEvent(new Event('pos-auth-changed'))
+}
+
+function getStoredProfile(): { id: number | null; name: string } {
+  try {
+    const storedUser = localStorage.getItem('pos_user')
+    const user = storedUser ? JSON.parse(storedUser) as { id?: unknown; name?: unknown } : null
+
+    return {
+      id: typeof user?.id === 'number' ? user.id : null,
+      name: typeof user?.name === 'string' && user.name.trim() ? user.name : 'Account',
+    }
+  } catch {
+    return { id: null, name: 'Account' }
+  }
 }
 
 function ProtectedAppShell() {
@@ -226,6 +264,17 @@ function ProtectedAppShell() {
   const navigate = useNavigate()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const title = location.pathname === '/dashboard' ? 'Overview' : pages[location.pathname] ?? 'Overview'
+  const profile = getStoredProfile()
+  const businessId = localStorage.getItem('pos_business_id')
+  const businessQuery = useQuery({
+    queryKey: ['current-business', businessId, profile.id],
+    queryFn: getCurrentBusiness,
+    enabled: Boolean(businessId),
+    retry: 1,
+  })
+  const businessName = businessQuery.data?.name ?? localStorage.getItem('pos_business_name') ?? 'Business workspace'
+  const userRole = businessQuery.data?.role ?? localStorage.getItem('pos_user_role') ?? 'Member'
+  const canManageStaff = userRole === 'owner' || userRole === 'admin'
 
   const handleLogout = () => {
     if (isLoggingOut) return
@@ -250,10 +299,10 @@ function ProtectedAppShell() {
         </Link>
 
         <div className="business-switcher">
-          <div className="business-monogram">D</div>
+          <div className="business-monogram">{getInitials(businessName).slice(0, 1)}</div>
           <div className="business-name">
-            <strong>Demo Retail Ltd</strong>
-            <span>Retail workspace</span>
+            <strong>{businessName}</strong>
+            <span>Current business</span>
           </div>
           <ChevronDown size={15} />
         </div>
@@ -267,6 +316,10 @@ function ProtectedAppShell() {
               {to === '/pos' && <kbd>F8</kbd>}
             </NavLink>
           ))}
+          {canManageStaff && <NavLink onClick={() => setMobileOpen(false)} to="/team" className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}>
+            <UsersRound size={18} />
+            <span>Team</span>
+          </NavLink>}
         </nav>
 
         <div className="sidebar-bottom">
@@ -280,10 +333,10 @@ function ProtectedAppShell() {
             <span>Settings</span>
           </NavLink>
           <div className="user-profile">
-            <div className="avatar">AM</div>
+            <div className="avatar">{getInitials(profile.name)}</div>
             <div className="user-label">
-              <strong>Alex Morgan</strong>
-              <span>Administrator</span>
+              <strong>{profile.name}</strong>
+              <span>{userRole.charAt(0).toUpperCase() + userRole.slice(1)}</span>
             </div>
             <button className="more-button" aria-label="User menu"><Menu size={17} /></button>
           </div>
@@ -321,7 +374,7 @@ function ProtectedAppShell() {
               <LogOut size={18} />
             </button>
             <div className="top-user">
-              <div className="avatar avatar-small">AM</div>
+              <div className="avatar avatar-small">{getInitials(profile.name)}</div>
               <ChevronDown size={14} />
             </div>
           </div>
@@ -330,7 +383,7 @@ function ProtectedAppShell() {
         <div className="page-content">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Dashboard userName={profile.name} businessName={businessName} />} />
             <Route path="/pos" element={<POSPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
@@ -338,6 +391,7 @@ function ProtectedAppShell() {
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/team" element={canManageStaff ? <StaffPage /> : <Navigate to="/dashboard" replace />} />
             <Route path="/settings" element={<ModulePage title="Settings" />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

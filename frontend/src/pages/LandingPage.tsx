@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
@@ -8,53 +7,26 @@ import {
   CreditCard,
   LayoutDashboard,
   LogOut,
-  PackageSearch,
-  Receipt,
   ShieldCheck,
-  ShoppingBag,
   ShoppingCart,
   Sparkles,
   UsersRound,
-  Zap,
 } from 'lucide-react'
-import { login } from '../api/auth'
 import { Badge } from '../components/ui/Badge'
-import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
+
+const currentYear = new Date().getFullYear()
 
 export default function LandingPage() {
   const navigate = useNavigate()
-  const [isDemoLoggingIn, setIsDemoLoggingIn] = useState(false)
   const token = localStorage.getItem('pos_token')
-  const rawUser = localStorage.getItem('pos_user')
-  const user = rawUser ? JSON.parse(rawUser) : null
-
-  async function handleQuickDemo() {
-    try {
-      setIsDemoLoggingIn(true)
-      const data = await login({
-        email: 'admin@demo.test',
-        password: 'poss-demo-2026',
-        device_name: 'quick-demo',
-      })
-      localStorage.setItem('pos_token', data.token)
-      localStorage.setItem('pos_user', JSON.stringify(data.user))
-      if (data.businesses.length > 0) {
-        localStorage.setItem('pos_business_id', data.businesses[0].id)
-      }
-      window.dispatchEvent(new Event('pos-auth-changed'))
-      navigate('/dashboard')
-    } catch {
-      navigate('/login')
-    } finally {
-      setIsDemoLoggingIn(false)
-    }
-  }
 
   function handleLogout() {
     localStorage.removeItem('pos_token')
     localStorage.removeItem('pos_user')
     localStorage.removeItem('pos_business_id')
+    localStorage.removeItem('pos_business_name')
+    localStorage.removeItem('pos_user_role')
     window.dispatchEvent(new Event('pos-auth-changed'))
     navigate('/')
   }
@@ -82,7 +54,6 @@ export default function LandingPage() {
             <a href="#features" className="hover:text-graphite transition">Features</a>
             <a href="#pos-tour" className="hover:text-graphite transition">POS Tour</a>
             <a href="#workflow" className="hover:text-graphite transition">Workflow</a>
-            <a href="#demo-access" className="hover:text-graphite transition">Demo Access</a>
           </nav>
 
           <div className="flex items-center gap-3">
@@ -163,15 +134,12 @@ export default function LandingPage() {
                     >
                       Create Free Workspace <ArrowRight size={16} />
                     </Link>
-                    <button
-                      type="button"
-                      disabled={isDemoLoggingIn}
-                      onClick={handleQuickDemo}
-                      className="inline-flex h-12 items-center gap-2 rounded-xl border border-graphite/20 bg-white px-5 text-sm font-bold text-graphite hover:bg-champagne-light transition shadow-sm cursor-pointer"
+                    <Link
+                      to="/login"
+                      className="inline-flex h-12 items-center gap-2 rounded-xl border border-graphite/20 bg-white px-5 text-sm font-bold text-graphite hover:bg-champagne-light transition shadow-sm"
                     >
-                      <Zap size={16} className="text-graphite fill-lime" />
-                      {isDemoLoggingIn ? 'Launching Demo...' : '1-Click Demo Login'}
-                    </button>
+                      Sign in to workspace
+                    </Link>
                   </>
                 )}
               </div>
@@ -377,52 +345,16 @@ export default function LandingPage() {
           </div>
         </section>
 
-        {/* Development & Demo Access Box */}
-        <section id="demo-access" className="py-20">
-          <div className="mx-auto max-w-4xl px-6 lg:px-8">
-            <Card className="overflow-hidden border-2 border-lime/40 bg-gradient-to-br from-white via-champagne-light/50 to-white p-8 sm:p-12 shadow-xl">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-                <div>
-                  <Badge variant="lime" className="mb-3">Pre-Configured Demo</Badge>
-                  <h2 className="text-2xl sm:text-3xl font-extrabold text-graphite font-heading">
-                    Explore with full Kenya Retail data
-                  </h2>
-                  <p className="mt-2 text-sm text-graphite/70 max-w-lg">
-                    52 seeded Kenyan products, 5 categories, 20 customers, 10 suppliers, and active sales are loaded into the database.
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-graphite/15 bg-white p-4 shadow-sm text-xs font-mono shrink-0">
-                  <p className="text-graphite/50 font-sans font-bold uppercase text-[10px] tracking-wider mb-2">Test Credentials</p>
-                  <p className="font-semibold text-graphite">Email: <span className="text-lime-dark">admin@demo.test</span></p>
-                  <p className="font-semibold text-graphite mt-1">Pass: <span className="text-lime-dark">poss-demo-2026</span></p>
-                </div>
-              </div>
-
-              <div className="mt-8 flex flex-wrap gap-4 pt-6 border-t border-graphite/10">
-                <button
-                  type="button"
-                  disabled={isDemoLoggingIn}
-                  onClick={handleQuickDemo}
-                  className="inline-flex h-12 items-center gap-2 rounded-xl bg-lime px-6 text-sm font-bold text-graphite shadow-md hover:bg-[#a8e83b] transition cursor-pointer"
-                >
-                  <Zap size={16} />
-                  {isDemoLoggingIn ? 'Logging In...' : 'Launch Demo Workspace'}
-                </button>
-                <Link
-                  to="/login"
-                  className="inline-flex h-12 items-center rounded-xl border border-graphite/20 bg-white px-6 text-sm font-bold text-graphite hover:bg-champagne-light transition"
-                >
-                  Go to Sign in
-                </Link>
-                <Link
-                  to="/register"
-                  className="inline-flex h-12 items-center rounded-xl bg-graphite px-6 text-sm font-bold text-champagne hover:bg-graphite-light transition"
-                >
-                  Register New Business
-                </Link>
-              </div>
-            </Card>
+        <section className="border-y border-graphite/10 bg-white py-16">
+          <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center lg:px-12">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-graphite/50">Your business, in one place</p>
+              <h2 className="mt-2 text-2xl font-extrabold text-graphite font-heading">Set up your workspace and get started.</h2>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Link to="/register" className="inline-flex h-11 items-center rounded-lg bg-lime px-5 text-sm font-bold text-graphite hover:bg-[#a8e83b] transition">Create an account</Link>
+              <Link to="/login" className="inline-flex h-11 items-center rounded-lg border border-graphite/20 bg-white px-5 text-sm font-bold text-graphite hover:bg-champagne-light transition">Sign in</Link>
+            </div>
           </div>
         </section>
       </main>
@@ -440,7 +372,7 @@ export default function LandingPage() {
           </div>
 
           <p className="text-xs text-graphite/50">
-            © {new Date().getFullYear()} Poss Platform. Commercial Point of Sale Foundation.
+            © {currentYear} Poss Platform. Commercial Point of Sale Foundation.
           </p>
 
           <div className="flex items-center gap-5 text-xs font-semibold text-graphite/70">

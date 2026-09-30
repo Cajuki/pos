@@ -18,13 +18,24 @@ class ProductInventorySalesTest extends TestCase
 
         $product = $this->postJson('/api/v1/products', [
             'sku' => 'TEA-001',
+            'barcode' => '0123456789012',
             'name' => 'Black Tea',
             'unit_price' => '12.50',
             'cost_price' => '8.25',
             'reorder_level' => 3,
         ])->assertCreated()
             ->assertJsonPath('data.quantity_on_hand', 0)
+            ->assertJsonPath('data.barcode', '0123456789012')
             ->json('data');
+
+        $this->getJson('/api/v1/products?search=0123456789012')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $product['id']);
+
+        $this->getJson('/api/v1/products?barcode=0123456789012&active=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.barcode', '0123456789012');
 
         $this->postJson('/api/v1/inventory/adjustments', [
             'product_id' => $product['id'],
@@ -99,6 +110,35 @@ class ProductInventorySalesTest extends TestCase
 
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 0]);
         $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_purchase_orders_reject_products_and_suppliers_from_another_business(): void
+    {
+        [$owner, $business] = $this->createBusinessContext();
+        [$otherOwner, $otherBusiness] = $this->createBusinessContext();
+        $this->useBusinessContext($otherOwner, $otherBusiness);
+
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'OTHER-001',
+            'name' => 'Other business product',
+            'unit_price' => '12.00',
+        ])->assertCreated()->json('data');
+        $supplier = $this->postJson('/api/v1/suppliers', [
+            'name' => 'Other business supplier',
+        ])->assertCreated()->json('data');
+
+        $this->useBusinessContext($owner, $business);
+        $this->postJson('/api/v1/purchases', [
+            'supplier_id' => $supplier['id'],
+            'items' => [[
+                'product_id' => $product['id'],
+                'quantity' => 2,
+                'unit_cost' => 5,
+            ]],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['supplier_id', 'items.0.product_id']);
+
+        $this->assertDatabaseCount('purchase_orders', 0);
     }
 
     private function createBusinessContext(): array

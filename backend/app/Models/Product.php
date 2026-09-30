@@ -8,7 +8,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
-#[Fillable(['business_id', 'sku', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
+/**
+ * @property-read int $id
+ */
+#[Fillable(['business_id', 'sku', 'barcode', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
 class Product extends Model
 {
     protected function casts(): array

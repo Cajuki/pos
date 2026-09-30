@@ -18,16 +18,19 @@ class ProductController extends Controller
         $business = $request->attributes->get('business');
         $validated = $request->validate([
             'search' => ['sometimes', 'string', 'max:100'],
+            'barcode' => ['sometimes', 'string', 'max:100'],
             'active' => ['sometimes', 'boolean'],
         ]);
 
         $products = Product::query()
             ->where('business_id', $business->id)
             ->with('inventoryStock')
-            ->when(isset($validated['search']), function (Builder $query) use ($validated): void {
+            ->when(isset($validated['barcode']), fn (Builder $query) => $query->where('barcode', $validated['barcode']))
+            ->when(! isset($validated['barcode']) && isset($validated['search']), function (Builder $query) use ($validated): void {
                 $query->where(function (Builder $query) use ($validated): void {
                     $query->where('name', 'like', '%'.$validated['search'].'%')
-                        ->orWhere('sku', 'like', '%'.$validated['search'].'%');
+                        ->orWhere('sku', 'like', '%'.$validated['search'].'%')
+                        ->orWhere('barcode', 'like', '%'.$validated['search'].'%');
                 });
             })
             ->when(array_key_exists('active', $validated), fn (Builder $query) => $query->where('is_active', $validated['active']))
@@ -45,6 +48,7 @@ class ProductController extends Controller
         $business = $request->attributes->get('business');
         $validated = $request->validate([
             'sku' => ['required', 'string', 'max:64', Rule::unique('products', 'sku')->where('business_id', $business->id)],
+            'barcode' => ['nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)],
             'name' => ['required', 'string', 'max:255'],
             'category' => ['nullable', 'string', 'max:100'],
             'description' => ['nullable', 'string', 'max:5000'],
@@ -77,6 +81,7 @@ class ProductController extends Controller
         $record = $this->findProduct($request, $product);
         $validated = $request->validate([
             'sku' => ['sometimes', 'required', 'string', 'max:64', Rule::unique('products', 'sku')->where('business_id', $business->id)->ignore($record->id)],
+            'barcode' => ['sometimes', 'nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)->ignore($record->id)],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'category' => ['sometimes', 'nullable', 'string', 'max:100'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
@@ -101,7 +106,7 @@ class ProductController extends Controller
     private function productData(Product $product): array
     {
         return [
-            ...$product->only(['id', 'sku', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
+            ...$product->only(['id', 'sku', 'barcode', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
             'quantity_on_hand' => $product->inventoryStock?->quantity_on_hand ?? 0,
         ];
     }

@@ -31,7 +31,7 @@ class AuthController extends Controller
             ],
         ]);
 
-        [$user, $business] = DB::transaction(function () use ($validated): array {
+        [$user, $business, $token] = DB::transaction(function () use ($validated): array {
             $business = Business::create([
                 'name' => $validated['business_name'],
                 'currency' => 'KES',
@@ -43,13 +43,14 @@ class AuthController extends Controller
                 'password' => $validated['password'],
             ]);
             $user->businesses()->attach($business, ['role' => 'owner']);
+            $token = $user->createToken('pos-web')->plainTextToken;
 
-            return [$user, $business];
+            return [$user, $business, $token];
         });
 
         return response()->json([
             'data' => [
-                'token' => $user->createToken('pos-web')->plainTextToken,
+                'token' => $token,
                 'user' => $user,
                 'business' => $business->only(['id', 'name', 'currency', 'timezone']),
                 'role' => 'owner',

@@ -10,6 +10,7 @@ use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class PurchaseController extends Controller
 {
@@ -36,11 +37,11 @@ class PurchaseController extends Controller
     {
         $business = $request->attributes->get('business');
         $validated = $request->validate([
-            'supplier_id' => ['nullable', 'exists:suppliers,id'],
-            'warehouse_id' => ['nullable', 'exists:warehouses,id'],
+            'supplier_id' => ['nullable', Rule::exists('suppliers', 'id')->where('business_id', $business->id)],
+            'warehouse_id' => ['nullable', Rule::exists('warehouses', 'id')->where('business_id', $business->id)],
             'notes' => ['nullable', 'string', 'max:500'],
             'items' => ['required', 'array', 'min:1'],
-            'items.*.product_id' => ['required', 'exists:products,id'],
+            'items.*.product_id' => ['required', Rule::exists('products', 'id')->where('business_id', $business->id)],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
             'items.*.unit_cost' => ['required', 'numeric', 'min:0'],
         ]);
@@ -70,7 +71,9 @@ class PurchaseController extends Controller
             ]);
 
             foreach ($validated['items'] as $item) {
-                $product = Product::findOrFail($item['product_id']);
+                $product = Product::query()
+                    ->where('business_id', $business->id)
+                    ->findOrFail($item['product_id']);
                 $lineTotal = $item['quantity'] * $item['unit_cost'];
 
                 $order->items()->create([

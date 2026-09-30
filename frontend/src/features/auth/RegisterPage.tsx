@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { useMutation } from '@tanstack/react-query'
 import axios from 'axios'
 import { Check, Eye, EyeOff, Loader2, UserRoundPlus, ArrowLeft } from 'lucide-react'
-import { registerBusiness } from '../../api/auth'
+import { registerBusiness, saveAuthSession } from '../../api/auth'
 import { Button } from '../../components/ui/Button'
 
 const registerSchema = z.object({
@@ -45,8 +45,16 @@ function getRegistrationError(error: unknown): string {
     return 'Too many registration attempts. Please wait a minute and try again.'
   }
 
-  if (error.response?.status === 500 || !error.response) {
-    return 'We could not reach the service. Please try again shortly.'
+  if (error.response?.status === 500) {
+    return 'The server could not finish creating your business. Please try again; if it keeps happening, check the API logs.'
+  }
+
+  if ([502, 503, 504].includes(error.response?.status ?? 0)) {
+    return 'The service is temporarily unavailable. Please try again shortly.'
+  }
+
+  if (!error.response) {
+    return 'We could not contact the API. Confirm the backend is running, then try again.'
   }
 
   if (typeof response?.message === 'string' && error.response.status < 500) {
@@ -85,9 +93,11 @@ export default function RegisterPage() {
   const mutation = useMutation({
     mutationFn: registerBusiness,
     onSuccess: (data) => {
-      localStorage.setItem('pos_token', data.token)
-      localStorage.setItem('pos_business_id', data.business.id)
-      localStorage.setItem('pos_user', JSON.stringify(data.user))
+      saveAuthSession({
+        token: data.token,
+        user: data.user,
+        business: { ...data.business, role: data.role },
+      })
       window.dispatchEvent(new Event('pos-auth-changed'))
       navigate('/dashboard', { replace: true })
     },
@@ -122,6 +132,9 @@ export default function RegisterPage() {
             Business / Store Name
           </label>
           <input
+            required
+            maxLength={160}
+            autoComplete="organization"
             placeholder="e.g. Westlands Supermarket Ltd"
             className="w-full rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm text-graphite outline-none focus:border-lime focus:ring-2 focus:ring-lime/30"
             {...form.register('business_name')}
@@ -136,6 +149,9 @@ export default function RegisterPage() {
             Owner / Administrator Full Name
           </label>
           <input
+            required
+            maxLength={120}
+            autoComplete="name"
             placeholder="e.g. Alex Morgan"
             className="w-full rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm text-graphite outline-none focus:border-lime focus:ring-2 focus:ring-lime/30"
             {...form.register('name')}
@@ -150,7 +166,10 @@ export default function RegisterPage() {
             Work Email Address
           </label>
           <input
+            required
             type="email"
+            maxLength={255}
+            autoComplete="email"
             placeholder="alex@store.ke"
             className="w-full rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm text-graphite outline-none focus:border-lime focus:ring-2 focus:ring-lime/30"
             {...form.register('email')}

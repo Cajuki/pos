@@ -83,6 +83,43 @@ class AuthenticationTest extends TestCase
             ->assertJsonPath('data.role', 'manager');
     }
 
+    public function test_business_owner_can_create_and_list_staff_members(): void
+    {
+        $owner = User::factory()->create();
+        $business = Business::create(['name' => 'Staff Store']);
+        $owner->businesses()->attach($business, ['role' => 'owner']);
+        $this->actingAs($owner, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $this->postJson('/api/v1/business/staff', [
+            'name' => 'Sam Cashier',
+            'email' => 'sam@example.test',
+            'password' => 'Strong-pass-2026!',
+            'role' => 'cashier',
+        ])->assertCreated()->assertJsonPath('data.role', 'cashier');
+
+        $this->getJson('/api/v1/business/staff')
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.1.email', 'sam@example.test');
+    }
+
+    public function test_non_admin_member_cannot_manage_staff(): void
+    {
+        $manager = User::factory()->create();
+        $business = Business::create(['name' => 'Staff Store']);
+        $manager->businesses()->attach($business, ['role' => 'manager']);
+        $this->actingAs($manager, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $this->postJson('/api/v1/business/staff', [
+            'name' => 'Sam Cashier',
+            'email' => 'sam@example.test',
+            'password' => 'Strong-pass-2026!',
+            'role' => 'cashier',
+        ])->assertForbidden();
+
+        $this->assertDatabaseCount('users', 1);
+    }
+
     public function test_logout_revokes_the_current_token(): void
     {
         $user = User::factory()->create();

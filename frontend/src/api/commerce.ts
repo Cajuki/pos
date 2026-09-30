@@ -185,6 +185,13 @@ export interface ReportSummary {
   }>
 }
 
+export interface StaffMember {
+  id: number
+  name: string
+  email: string
+  role: string
+}
+
 interface PaginatedResponse<T> {
   data: T[]
   meta: { current_page: number; last_page: number; total: number }
@@ -198,16 +205,38 @@ export async function getProducts(search = '', active?: boolean): Promise<Produc
   return response.data.data
 }
 
+export async function getProductByBarcode(barcode: string): Promise<Product | null> {
+  const response = await apiClient.get<PaginatedResponse<Product>>('/products', {
+    params: { barcode, active: 1 },
+  })
+  return response.data.data[0] ?? null
+}
+
 export async function createProduct(product: {
   sku: string
+  barcode?: string
   name: string
   category?: string
-  barcode?: string
   unit_price: string
   cost_price?: string
   reorder_level?: number
 }): Promise<Product> {
   const response = await apiClient.post<{ data: Product }>('/products', product)
+  return response.data.data
+}
+
+export async function getStaff(): Promise<StaffMember[]> {
+  const response = await apiClient.get<{ data: StaffMember[] }>('/business/staff')
+  return response.data.data
+}
+
+export async function createStaff(payload: {
+  name: string
+  email: string
+  password: string
+  role: string
+}): Promise<StaffMember> {
+  const response = await apiClient.post<{ data: StaffMember }>('/business/staff', payload)
   return response.data.data
 }
 

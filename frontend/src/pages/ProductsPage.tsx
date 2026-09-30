@@ -25,6 +25,7 @@ export default function ProductsPage() {
 
     createMutation.mutate({
       sku: String(formData.get('sku')),
+      barcode: String(formData.get('barcode')) || undefined,
       name: String(formData.get('name')),
       category: String(formData.get('category')) || undefined,
       unit_price: String(formData.get('unit_price')),
@@ -40,8 +41,8 @@ export default function ProductsPage() {
   }))
 
   return (
-    <section className="module-page">
-      <div className="mb-6 flex items-center justify-between gap-4">
+    <section className="module-page w-full">
+      <div className="mb-6 flex w-full items-center justify-between gap-4">
         <div>
           <p className="eyebrow">Catalog</p>
           <h1>Products</h1>
@@ -52,9 +53,10 @@ export default function ProductsPage() {
       </div>
 
       {isCreateOpen && (
-        <Card className="mb-5 p-5">
+        <Card className="mb-5 w-full p-5">
           <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitProduct}>
             <label className="grid gap-1 text-sm font-medium text-graphite">SKU<input required name="sku" maxLength={64} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Barcode<input name="barcode" maxLength={100} inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Product name<input required name="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Category<input name="category" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Selling price (KES)<input required name="unit_price" inputMode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
@@ -68,7 +70,7 @@ export default function ProductsPage() {
         </Card>
       )}
 
-      <Card className="p-5">
+      <Card className="w-full p-5">
         <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full rounded-xl border border-graphite/10 px-4 py-3 text-sm md:max-w-sm" placeholder="Search products" />
         </div>
@@ -81,6 +83,7 @@ export default function ProductsPage() {
           columns={[
             { header: 'Product', accessor: 'name' },
             { header: 'SKU', accessor: 'sku' },
+            { header: 'Barcode', accessor: 'barcode' },
             { header: 'Category', accessor: 'category' },
             { header: 'Selling Price', accessor: 'price' },
             { header: 'Stock', accessor: 'quantity_on_hand' },

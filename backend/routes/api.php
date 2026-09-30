@@ -13,14 +13,25 @@ use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SupplierController;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
-    Route::get('/health', fn () => response()->json([
-        'status' => 'ok',
-        'service' => 'pos-api',
-        'version' => 'v1',
-    ]))->name('api.v1.health');
+    Route::get('/health', function () {
+        try {
+            DB::select('select 1');
+            $database = 'connected';
+        } catch (Throwable) {
+            $database = 'unavailable';
+        }
+
+        return response()->json([
+            'status' => $database === 'connected' ? 'ok' : 'unavailable',
+            'service' => 'pos-api',
+            'version' => 'v1',
+            'database' => $database,
+        ], $database === 'connected' ? 200 : 503);
+    })->name('api.v1.health');
 
     Route::prefix('auth')->name('api.v1.auth.')->group(function (): void {
         Route::post('/register-business', [AuthController::class, 'registerBusiness'])
@@ -37,6 +48,10 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/businesses', [BusinessController::class, 'index'])->name('api.v1.businesses.index');
         Route::get('/business/current', [AuthController::class, 'currentBusiness'])
             ->middleware('business')->name('api.v1.business.current');
+        Route::middleware('business')->group(function (): void {
+            Route::get('/business/staff', [BusinessController::class, 'staff'])->name('api.v1.business.staff.index');
+            Route::post('/business/staff', [BusinessController::class, 'addStaff'])->name('api.v1.business.staff.store');
+        });
         Route::get('/businesses/{business}', [BusinessController::class, 'show'])
             ->middleware('business')->name('api.v1.businesses.show');
 
@@ -78,4 +93,3 @@ Route::prefix('v1')->group(function (): void {
         });
     });
 });
-
