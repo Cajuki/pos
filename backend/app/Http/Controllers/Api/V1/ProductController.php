@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryStock;
 use App\Models\Product;
+use App\Models\StockMovement;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -47,20 +48,42 @@ class ProductController extends Controller
     {
         $business = $request->attributes->get('business');
         $validated = $request->validate([
-            'sku' => ['required', 'string', 'max:64', Rule::unique('products', 'sku')->where('business_id', $business->id)],
+            'sku' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)],
             'barcode' => ['nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)],
             'name' => ['required', 'string', 'max:255'],
             'category' => ['nullable', 'string', 'max:100'],
             'description' => ['nullable', 'string', 'max:5000'],
-            'unit_price' => ['required', 'string', 'regex:/^\d{1,9}(?:\.\d{1,2})?$/'],
-            'cost_price' => ['nullable', 'string', 'regex:/^\d{1,9}(?:\.\d{1,2})?$/'],
+            'unit_price' => ['required', 'integer', 'min:0'],
+            'cost_price' => ['nullable', 'integer', 'min:0'],
+            'quantity_on_hand' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
             'reorder_level' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
-        $product = DB::transaction(function () use ($business, $validated): Product {
+        $product = DB::transaction(function () use ($business, $request, $validated): Product {
+            $quantityOnHand = $validated['quantity_on_hand'] ?? 0;
+            unset($validated['quantity_on_hand']);
+
             $product = Product::create([...$validated, 'business_id' => $business->id]);
-            InventoryStock::create(['business_id' => $business->id, 'product_id' => $product->id]);
+            $stock = InventoryStock::create([
+                'business_id' => $business->id,
+                'product_id' => $product->id,
+                'quantity_on_hand' => $quantityOnHand,
+            ]);
+
+            if ($quantityOnHand > 0) {
+                StockMovement::create([
+                    'business_id' => $business->id,
+                    'inventory_stock_id' => $stock->id,
+                    'product_id' => $product->id,
+                    'created_by' => $request->user()->id,
+                    'type' => 'adjustment',
+                    'quantity_change' => $quantityOnHand,
+                    'quantity_before' => 0,
+                    'quantity_after' => $quantityOnHand,
+                    'reason' => 'Opening stock',
+                ]);
+            }
 
             return $product;
         });
@@ -80,13 +103,13 @@ class ProductController extends Controller
         $business = $request->attributes->get('business');
         $record = $this->findProduct($request, $product);
         $validated = $request->validate([
-            'sku' => ['sometimes', 'required', 'string', 'max:64', Rule::unique('products', 'sku')->where('business_id', $business->id)->ignore($record->id)],
+            'sku' => ['sometimes', 'required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)->ignore($record->id)],
             'barcode' => ['sometimes', 'nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)->ignore($record->id)],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'category' => ['sometimes', 'nullable', 'string', 'max:100'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
-            'unit_price' => ['sometimes', 'required', 'string', 'regex:/^\d{1,9}(?:\.\d{1,2})?$/'],
-            'cost_price' => ['sometimes', 'nullable', 'string', 'regex:/^\d{1,9}(?:\.\d{1,2})?$/'],
+            'unit_price' => ['sometimes', 'required', 'integer', 'min:0'],
+            'cost_price' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'reorder_level' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
             'is_active' => ['sometimes', 'boolean'],
         ]);

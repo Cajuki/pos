@@ -178,7 +178,7 @@ export default function PosPage() {
           <div className="pos-catalog-toolbar">
             <label className="pos-search">
               <Search size={18} />
-              <input value={search} onChange={(event) => { setSearch(event.target.value); setScanMessage('') }} onKeyDown={handleSearchKeyDown} placeholder="Search name, SKU, or scan barcode" aria-label="Search products or scan a barcode" />
+              <input autoFocus value={search} onChange={(event) => { setSearch(event.target.value); setScanMessage('') }} onKeyDown={handleSearchKeyDown} placeholder="Search name, SKU, or scan barcode" aria-label="Search products or scan a barcode" />
               {search ? <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={16} /></button> : <span><Barcode size={17} /> Scan</span>}
             </label>
             <div className="pos-result-count">{visibleProducts.length} items</div>
@@ -264,10 +264,50 @@ export default function PosPage() {
             {!registerOpen && !registerQuery.isPending && <p className="pos-gate-note">Open the register below before completing a sale.</p>}
           </div>
 
-          {receipt && <div className="pos-receipt">
-            <div className="pos-receipt-icon"><Check size={17} /></div>
-            <div><strong>Sale recorded</strong><small>{receipt.receipt_number} · {receipt.status}</small></div>
-            <button type="button" onClick={() => window.print()} aria-label="Print receipt" title="Print receipt"><Printer size={17} /></button>
+          {receipt && <div className="pos-receipt pos-receipt-shell">
+            <div className="pos-receipt-header">
+              <div className="pos-receipt-icon"><Check size={17} /></div>
+              <div>
+                <strong>Sale recorded</strong>
+                <small>{receipt.receipt_number} · {receipt.status}</small>
+              </div>
+              <button type="button" onClick={() => window.print()} aria-label="Print receipt" title="Print receipt"><Printer size={17} /></button>
+            </div>
+
+            <div className="printable-receipt" aria-label="Printable sales receipt">
+              <header className="receipt-header">
+                <p className="receipt-brand">POSS POS</p>
+                <h3>Retail Receipt</h3>
+                <p>{new Date(receipt.created_at).toLocaleString()}</p>
+              </header>
+
+              <div className="receipt-meta">
+                <div><span>Receipt</span><strong>{receipt.receipt_number}</strong></div>
+                <div><span>Payment</span><strong>{receipt.payment_method.toUpperCase()}</strong></div>
+              </div>
+
+              <div className="receipt-items">
+                {receipt.items.map((item) => (
+                  <div key={`${receipt.id}-${item.product_id}-${item.sku}`} className="receipt-item">
+                    <div className="receipt-item-main">
+                      <strong>{item.product_name}</strong>
+                      <small>{item.quantity} × {formatKes(toCents(item.unit_price))}</small>
+                    </div>
+                    <span>{formatKes(toCents(item.line_total))}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="receipt-summary">
+                <div><span>Subtotal</span><strong>{formatKes(toCents(receipt.subtotal))}</strong></div>
+                <div><span>Total</span><strong>{formatKes(toCents(receipt.total))}</strong></div>
+              </div>
+
+              <footer className="receipt-footer">
+                <p>Thank you for shopping with POSS.</p>
+                <p>Support: help@poss.co.ke</p>
+              </footer>
+            </div>
           </div>}
 
           <div className="pos-register-card">

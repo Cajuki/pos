@@ -15,6 +15,7 @@ export default function ProductsPage() {
     mutationFn: createProduct,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['products'] })
+      await queryClient.invalidateQueries({ queryKey: ['inventory'] })
       setIsCreateOpen(false)
     },
   })
@@ -22,14 +23,22 @@ export default function ProductsPage() {
   function submitProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
+    const sku = String(formData.get('sku') ?? '').trim()
+    const unitPrice = Number(formData.get('unit_price'))
+    const costPrice = formData.get('cost_price')
+
+    if (!sku || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      return
+    }
 
     createMutation.mutate({
-      sku: String(formData.get('sku')),
-      barcode: String(formData.get('barcode')) || undefined,
-      name: String(formData.get('name')),
-      category: String(formData.get('category')) || undefined,
-      unit_price: String(formData.get('unit_price')),
-      cost_price: String(formData.get('cost_price')) || undefined,
+      sku,
+      barcode: String(formData.get('barcode') ?? '').trim() || undefined,
+      name: String(formData.get('name') ?? '').trim(),
+      category: String(formData.get('category') ?? '').trim() || undefined,
+      unit_price: unitPrice,
+      cost_price: costPrice === null || String(costPrice).trim() === '' ? undefined : Number(costPrice),
+      quantity_on_hand: Number(formData.get('quantity_on_hand') || 0),
       reorder_level: Number(formData.get('reorder_level') || 0),
     })
   }
@@ -55,12 +64,13 @@ export default function ProductsPage() {
       {isCreateOpen && (
         <Card className="mb-5 w-full p-5">
           <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitProduct}>
-            <label className="grid gap-1 text-sm font-medium text-graphite">SKU<input required name="sku" maxLength={64} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Barcode<input name="barcode" maxLength={100} inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">SKU<input required name="sku" maxLength={64} title="Use letters, numbers, and hyphens only" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Barcode (scan or type)<input name="barcode" maxLength={100} autoFocus placeholder="Scan barcode" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Product name<input required name="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Category<input name="category" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Selling price (KES)<input required name="unit_price" inputMode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Cost price (KES)<input name="cost_price" inputMode="decimal" pattern="[0-9]+(\.[0-9]{1,2})?" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Selling price (KES)<input required name="unit_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Cost price (KES)<input name="cost_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Initial quantity on hand<input name="quantity_on_hand" type="number" min="0" max="2147483647" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Reorder level<input name="reorder_level" type="number" min="0" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-3">
               <Button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Saving...' : 'Save product'}</Button>

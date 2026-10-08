@@ -217,8 +217,9 @@ export async function createProduct(product: {
   barcode?: string
   name: string
   category?: string
-  unit_price: string
-  cost_price?: string
+  unit_price: number
+  cost_price?: number
+  quantity_on_hand?: number
   reorder_level?: number
 }): Promise<Product> {
   const response = await apiClient.post<{ data: Product }>('/products', product)

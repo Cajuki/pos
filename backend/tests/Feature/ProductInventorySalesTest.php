@@ -11,6 +11,63 @@ class ProductInventorySalesTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_product_creation_sets_initial_stock_and_exposes_reorder_level(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'RICE-001',
+            'name' => 'Rice',
+            'unit_price' => 20,
+            'quantity_on_hand' => 12,
+            'reorder_level' => 4,
+        ])->assertCreated()
+            ->assertJsonPath('data.quantity_on_hand', 12)
+            ->assertJsonPath('data.reorder_level', 4)
+            ->json('data');
+
+        $this->getJson('/api/v1/inventory')
+            ->assertOk()
+            ->assertJsonPath('data.0.quantity_on_hand', 12)
+            ->assertJsonPath('data.0.reorder_level', 4)
+            ->assertJsonPath('data.0.is_low_stock', false);
+
+        $this->assertDatabaseHas('inventory_stocks', [
+            'business_id' => $business->id,
+            'product_id' => $product['id'],
+            'quantity_on_hand' => 12,
+        ]);
+        $this->assertDatabaseHas('stock_movements', [
+            'business_id' => $business->id,
+            'product_id' => $product['id'],
+            'type' => 'adjustment',
+            'quantity_change' => 12,
+            'quantity_before' => 0,
+            'quantity_after' => 12,
+            'reason' => 'Opening stock',
+        ]);
+    }
+
+    public function test_product_requires_integer_price_and_character_based_sku(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+
+        $this->postJson('/api/v1/products', [
+            'sku' => 'RICE#001',
+            'name' => 'Rice',
+            'unit_price' => '20.00',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['sku', 'unit_price']);
+
+        $this->postJson('/api/v1/products', [
+            'sku' => 'RICE-001',
+            'name' => 'Rice',
+            'unit_price' => 20,
+        ])->assertCreated();
+    }
+
     public function test_product_stock_and_checkout_flow_is_transactional(): void
     {
         [$user, $business] = $this->createBusinessContext();
@@ -20,8 +77,8 @@ class ProductInventorySalesTest extends TestCase
             'sku' => 'TEA-001',
             'barcode' => '0123456789012',
             'name' => 'Black Tea',
-            'unit_price' => '12.50',
-            'cost_price' => '8.25',
+            'unit_price' => 12,
+            'cost_price' => 8,
             'reorder_level' => 3,
         ])->assertCreated()
             ->assertJsonPath('data.quantity_on_hand', 0)
@@ -43,16 +100,23 @@ class ProductInventorySalesTest extends TestCase
             'reason' => 'Opening count',
         ])->assertCreated()->assertJsonPath('data.quantity_after', 10);
 
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '50.00'])
+            ->assertCreated();
+
         $sale = $this->postJson('/api/v1/sales', [
             'payment_method' => 'cash',
             'items' => [['product_id' => $product['id'], 'quantity' => 2]],
         ])->assertCreated()
-            ->assertJsonPath('data.total', '25.00')
-            ->assertJsonPath('data.items.0.line_total', '25.00')
+            ->assertJsonPath('data.total', '24.00')
+            ->assertJsonPath('data.items.0.line_total', '24.00')
             ->json('data');
 
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 8]);
         $this->assertDatabaseHas('stock_movements', ['sale_id' => $sale['id'], 'quantity_change' => -2]);
+        $this->assertDatabaseHas('cash_register_sessions', [
+            'business_id' => $business->id,
+            'expected_cash' => '74.00',
+        ]);
 
         $this->postJson('/api/v1/sales', [
             'payment_method' => 'mobile_money',
@@ -69,6 +133,46 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 2);
     }
 
+    public function test_checkout_requires_an_open_register_and_reconciles_only_cash_sales(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'MILK-001',
+            'name' => 'Milk',
+            'unit_price' => 10,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 3,
+            'reason' => 'Opening count',
+        ])->assertCreated();
+
+        $salePayload = [
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ];
+        $this->postJson('/api/v1/sales', [...$salePayload, 'payment_method' => 'cash'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('cash_register');
+        $this->assertDatabaseCount('sales', 0);
+
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '50.00'])
+            ->assertCreated();
+        $this->postJson('/api/v1/sales', [...$salePayload, 'payment_method' => 'mpesa'])->assertCreated();
+        $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '50.00']);
+
+        $this->postJson('/api/v1/sales', [...$salePayload, 'payment_method' => 'cash'])->assertCreated();
+        $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '60.00']);
+
+        $this->postJson('/api/v1/cash-registers/close', ['actual_cash' => '60.00'])
+            ->assertOk()
+            ->assertJsonPath('data.difference', '0.00');
+        $this->postJson('/api/v1/sales', [...$salePayload, 'payment_method' => 'cash'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('cash_register');
+        $this->assertDatabaseCount('sales', 2);
+    }
+
     public function test_products_and_sales_are_scoped_to_business_membership(): void
     {
         [$owner, $business] = $this->createBusinessContext();
@@ -76,7 +180,7 @@ class ProductInventorySalesTest extends TestCase
         $product = $this->postJson('/api/v1/products', [
             'sku' => 'COFFEE-001',
             'name' => 'Coffee',
-            'unit_price' => '5.00',
+            'unit_price' => 5,
         ])->assertCreated()->json('data');
 
         $otherUser = User::factory()->create();
@@ -99,7 +203,7 @@ class ProductInventorySalesTest extends TestCase
         $product = $this->postJson('/api/v1/products', [
             'sku' => 'SOAP-001',
             'name' => 'Soap',
-            'unit_price' => '10.00',
+            'unit_price' => 10,
         ])->assertCreated()->json('data');
 
         $this->postJson('/api/v1/inventory/adjustments', [
@@ -121,7 +225,7 @@ class ProductInventorySalesTest extends TestCase
         $product = $this->postJson('/api/v1/products', [
             'sku' => 'OTHER-001',
             'name' => 'Other business product',
-            'unit_price' => '12.00',
+            'unit_price' => 12,
         ])->assertCreated()->json('data');
         $supplier = $this->postJson('/api/v1/suppliers', [
             'name' => 'Other business supplier',

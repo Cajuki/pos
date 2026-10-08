@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\CashRegister;
+use App\Models\CashRegisterSession;
 use App\Models\InventoryStock;
 use App\Models\Product;
 use App\Models\Sale;
@@ -65,6 +67,24 @@ class SaleController extends Controller
                 abort(404, 'Inventory record not found.');
             }
 
+            $register = CashRegister::query()
+                ->where('business_id', $business->id)
+                ->where('code', 'REG-01')
+                ->where('is_active', true)
+                ->first();
+            $session = $register ? CashRegisterSession::query()
+                ->where('business_id', $business->id)
+                ->where('cash_register_id', $register->id)
+                ->where('status', 'open')
+                ->lockForUpdate()
+                ->first() : null;
+
+            if (! $session) {
+                throw ValidationException::withMessages([
+                    'cash_register' => 'Open the cash register before recording a sale.',
+                ]);
+            }
+
             $subtotalCents = 0;
             foreach ($items as $index => $item) {
                 $product = $products->get($item['product_id']);
@@ -122,6 +142,14 @@ class SaleController extends Controller
                     'quantity_before' => $quantityBefore,
                     'quantity_after' => $quantityAfter,
                     'reason' => 'Sale '.$receiptNumber,
+                ]);
+            }
+
+            if ($validated['payment_method'] === 'cash') {
+                $session->update([
+                    'expected_cash' => $this->fromCents(
+                        $this->toCents($session->expected_cash) + $subtotalCents
+                    ),
                 ]);
             }
 

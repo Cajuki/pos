@@ -104,21 +104,41 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* Print styles for receipts */
 @media print {
+  body {
+    background: #fff;
+  }
+
   body * {
     visibility: hidden;
   }
+
   .printable-receipt, .printable-receipt * {
     visibility: visible;
   }
+
   .printable-receipt {
     position: absolute;
     left: 0;
     top: 0;
     width: 80mm;
     margin: 0;
-    padding: 10px;
-    background: white;
-    color: black;
+    padding: 12px;
+    border: 0;
+    background: #fff;
+    color: #111827;
+    box-shadow: none;
+  }
+
+  .pos-receipt-shell {
+    display: block !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .pos-receipt-header,
+  .pos-receipt-shell > :not(.printable-receipt) {
+    display: none !important;
   }
 }
 
