@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class BusinessController extends Controller
 {
@@ -79,6 +80,71 @@ class BusinessController extends Controller
                 'role' => $validated['role'],
             ],
         ], 201);
+    }
+
+    public function settings(Request $request): JsonResponse
+    {
+        $business = $request->attributes->get('business');
+        $role = $request->user()->businesses()->whereKey($business->getKey())->value('business_user.role');
+
+        return response()->json(['data' => [
+            ...$business->only(['id', 'name', 'currency', 'timezone']),
+            'role' => $role,
+            'settings' => $business->posSettings(),
+        ]]);
+    }
+
+    public function updateSettings(Request $request): JsonResponse
+    {
+        $business = $request->attributes->get('business');
+        $this->authorizeStaffManagement($request, $business);
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:160'],
+            'currency' => ['required', 'string', Rule::in(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR'])],
+            'timezone' => ['required', 'timezone:all'],
+            'settings' => ['required', 'array'],
+            'settings.business_phone' => ['nullable', 'string', 'max:40'],
+            'settings.business_email' => ['nullable', 'email', 'max:255'],
+            'settings.business_address' => ['nullable', 'string', 'max:255'],
+            'settings.tax_number' => ['nullable', 'string', 'max:80'],
+            'settings.tax_enabled' => ['required', 'boolean'],
+            'settings.tax_rate' => ['nullable', 'numeric', 'min:0', 'max:100', 'required_if:settings.tax_enabled,true'],
+            'settings.tax_inclusive' => ['required', 'boolean'],
+            'settings.discount_enabled' => ['required', 'boolean'],
+            'settings.max_discount_percent' => ['required', 'numeric', 'min:0', 'max:100'],
+            'settings.payment_methods' => ['required', 'array', 'min:1'],
+            'settings.payment_methods.*' => ['required', 'distinct', Rule::in(['cash', 'mpesa', 'card', 'bank', 'credit'])],
+            'settings.default_payment_method' => ['required', Rule::in(['cash', 'mpesa', 'card', 'bank', 'credit'])],
+            'settings.receipt_show_business_details' => ['required', 'boolean'],
+            'settings.receipt_footer' => ['nullable', 'string', 'max:250'],
+        ]);
+
+        if (! in_array($validated['settings']['default_payment_method'], $validated['settings']['payment_methods'], true)) {
+            throw ValidationException::withMessages([
+                'settings.default_payment_method' => 'The default payment method must be enabled.',
+            ]);
+        }
+
+        foreach (['business_phone', 'business_email', 'business_address', 'tax_number', 'receipt_footer'] as $field) {
+            $validated['settings'][$field] ??= '';
+        }
+        $validated['settings']['tax_rate'] ??= '0.00';
+        if (! $validated['settings']['discount_enabled']) {
+            $validated['settings']['max_discount_percent'] = '0.00';
+        }
+
+        $business->update([
+            'name' => $validated['name'],
+            'currency' => $validated['currency'],
+            'timezone' => $validated['timezone'],
+            'settings' => $validated['settings'],
+        ]);
+
+        return response()->json(['data' => [
+            ...$business->fresh()->only(['id', 'name', 'currency', 'timezone']),
+            'role' => $request->user()->businesses()->whereKey($business->getKey())->value('business_user.role'),
+            'settings' => $business->posSettings(),
+        ]]);
     }
 
     private function authorizeStaffManagement(Request $request, Business $business): void

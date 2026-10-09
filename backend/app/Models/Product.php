@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 /**
  * @property-read int $id
  */
-#[Fillable(['business_id', 'sku', 'barcode', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
+#[Fillable(['business_id', 'sku', 'barcode', 'barcode_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
 class Product extends Model
 {
     protected function casts(): array
@@ -21,6 +21,7 @@ class Product extends Model
             'cost_price' => 'decimal:2',
             'reorder_level' => 'integer',
             'is_active' => 'boolean',
+            'barcode_tracking_enabled' => 'boolean',
         ];
     }
 
@@ -37,5 +38,10 @@ class Product extends Model
     public function stockMovements(): HasMany
     {
         return $this->hasMany(StockMovement::class);
+    }
+
+    public function trackedBarcodes(): HasMany
+    {
+        return $this->hasMany(ProductBarcode::class);
     }
 }

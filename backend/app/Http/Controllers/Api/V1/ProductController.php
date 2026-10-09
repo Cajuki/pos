@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryStock;
 use App\Models\Product;
+use App\Models\ProductBarcode;
 use App\Models\StockMovement;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -49,7 +50,13 @@ class ProductController extends Controller
         $business = $request->attributes->get('business');
         $validated = $request->validate([
             'sku' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)],
-            'barcode' => ['nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)],
+            'barcode' => [
+                'nullable',
+                'string',
+                'max:100',
+                Rule::unique('products', 'barcode')->where('business_id', $business->id),
+                Rule::unique('product_barcodes', 'barcode')->where('business_id', $business->id),
+            ],
             'name' => ['required', 'string', 'max:255'],
             'category' => ['nullable', 'string', 'max:100'],
             'description' => ['nullable', 'string', 'max:5000'],
@@ -104,7 +111,14 @@ class ProductController extends Controller
         $record = $this->findProduct($request, $product);
         $validated = $request->validate([
             'sku' => ['sometimes', 'required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)->ignore($record->id)],
-            'barcode' => ['sometimes', 'nullable', 'string', 'max:100', Rule::unique('products', 'barcode')->where('business_id', $business->id)->ignore($record->id)],
+            'barcode' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:100',
+                Rule::unique('products', 'barcode')->where('business_id', $business->id)->ignore($record->id),
+                Rule::unique('product_barcodes', 'barcode')->where('business_id', $business->id),
+            ],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'category' => ['sometimes', 'nullable', 'string', 'max:100'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
@@ -129,8 +143,39 @@ class ProductController extends Controller
     private function productData(Product $product): array
     {
         return [
-            ...$product->only(['id', 'sku', 'barcode', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
+            ...$product->only(['id', 'sku', 'barcode', 'barcode_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
             'quantity_on_hand' => $product->inventoryStock?->quantity_on_hand ?? 0,
         ];
+    }
+
+    public function barcode(Request $request, string $barcode): JsonResponse
+    {
+        $business = $request->attributes->get('business');
+        $trackedBarcode = ProductBarcode::query()
+            ->where('business_id', $business->id)
+            ->where('barcode', $barcode)
+            ->with(['product.inventoryStock'])
+            ->first();
+
+        if ($trackedBarcode) {
+            return response()->json(['data' => [
+                'product' => $this->productData($trackedBarcode->product),
+                'tracked_barcode' => $trackedBarcode->status === 'in_stock' ? $trackedBarcode->barcode : null,
+                'status' => $trackedBarcode->status,
+            ]]);
+        }
+
+        $product = Product::query()
+            ->where('business_id', $business->id)
+            ->where('barcode', $barcode)
+            ->where('is_active', true)
+            ->with('inventoryStock')
+            ->first();
+
+        return response()->json(['data' => $product ? [
+            'product' => $this->productData($product),
+            'tracked_barcode' => null,
+            'status' => 'product',
+        ] : null]);
     }
 }

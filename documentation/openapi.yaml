@@ -128,6 +128,38 @@ paths:
         '400': { description: Business context header is missing }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { description: Business is unavailable or user is not a member }
+  /business/settings:
+    get:
+      summary: Get POS settings for the selected business
+      operationId: getBusinessSettings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BusinessId'
+      responses:
+        '200':
+          description: Business settings available to its members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BusinessSettings' }
+        '404': { description: Business is unavailable or user is not a member }
+    put:
+      summary: Update POS settings for the selected business
+      operationId: updateBusinessSettings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BusinessId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessSettingsInput' }
+      responses:
+        '200': { description: Business settings updated }
+        '403': { description: Only business owners and admins may update settings }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /products:
     get:
       summary: List products in the selected business
@@ -231,6 +263,29 @@ paths:
         '200': { description: Product updated }
         '404': { description: Product is unavailable in the selected business }
         '422': { $ref: '#/components/responses/ValidationError' }
+  /products/barcode/{barcode}:
+    get:
+      summary: Resolve a shared product barcode or individual tracked unit barcode
+      operationId: resolveProductBarcode
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BusinessId'
+        - in: path
+          name: barcode
+          required: true
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: Matching product and unit status, or null when unknown
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/ProductBarcodeLookup'
+                      - type: 'null'
   /inventory:
     get:
       summary: List current stock levels
@@ -271,6 +326,26 @@ paths:
       responses:
         '201': { description: Stock movement recorded }
         '404': { description: Inventory record not found in the selected business }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /inventory/barcodes/receive:
+    post:
+      summary: Receive one uniquely barcoded unit into product stock
+      operationId: receiveIndividuallyBarcodedStock
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BusinessId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, barcode]
+              properties:
+                product_id: { type: integer }
+                barcode: { type: string, maxLength: 100 }
+      responses:
+        '201': { description: Unique unit barcode recorded and aggregate stock increased }
         '422': { $ref: '#/components/responses/ValidationError' }
   /inventory/movements:
     get:
@@ -385,6 +460,41 @@ components:
         - type: object
           properties:
             role: { type: string, example: owner }
+    BusinessSettings:
+      allOf:
+        - $ref: '#/components/schemas/BusinessMembership'
+        - type: object
+          properties:
+            settings: { $ref: '#/components/schemas/PosPreferences' }
+    BusinessSettingsInput:
+      type: object
+      required: [name, currency, timezone, settings]
+      properties:
+        name: { type: string, maxLength: 160 }
+        currency: { type: string, enum: [KES, USD, UGX, TZS, RWF, EUR, GBP, ZAR] }
+        timezone: { type: string, example: Africa/Nairobi }
+        settings: { $ref: '#/components/schemas/PosPreferences' }
+    PosPreferences:
+      type: object
+      required: [tax_enabled, tax_rate, tax_inclusive, discount_enabled, max_discount_percent, payment_methods, default_payment_method, receipt_show_business_details, receipt_footer]
+      properties:
+        business_phone: { type: string, maxLength: 40 }
+        business_email: { type: string, format: email }
+        business_address: { type: string, maxLength: 255 }
+        tax_number: { type: string, maxLength: 80 }
+        tax_enabled: { type: boolean }
+        tax_rate: { type: string, example: '16.00' }
+        tax_inclusive: { type: boolean }
+        discount_enabled: { type: boolean }
+        max_discount_percent: { type: string, example: '15.00' }
+        payment_methods:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [cash, mpesa, card, bank, credit] }
+        default_payment_method: { type: string, enum: [cash, mpesa, card, bank, credit] }
+        receipt_show_business_details: { type: boolean }
+        receipt_footer: { type: string, maxLength: 250 }
     RegistrationResponse:
       type: object
       required: [data]
@@ -427,6 +537,12 @@ components:
         cost_price: { type: [string, 'null'], pattern: '^\\d{1,9}(?:\\.\\d{1,2})?$' }
         reorder_level: { type: integer, minimum: 0 }
         is_active: { type: boolean }
+    ProductBarcodeLookup:
+      type: object
+      properties:
+        product: { $ref: '#/components/schemas/Product' }
+        tracked_barcode: { type: [string, 'null'] }
+        status: { type: string, enum: [in_stock, sold, product] }
     Product:
       allOf:
         - $ref: '#/components/schemas/ProductInput'
@@ -436,6 +552,7 @@ components:
             id: { type: integer }
             quantity_on_hand: { type: integer }
             is_active: { type: boolean }
+            barcode_tracking_enabled: { type: boolean }
     InventoryItem:
       type: object
       properties:
@@ -446,6 +563,7 @@ components:
         quantity_on_hand: { type: integer }
         reorder_level: { type: integer }
         is_low_stock: { type: boolean }
+        barcode_tracking_enabled: { type: boolean }
     StockMovement:
       type: object
       properties:
@@ -469,7 +587,9 @@ components:
       type: object
       required: [payment_method, items]
       properties:
-        payment_method: { type: string, enum: [cash, credit] }
+        payment_method: { type: string, enum: [cash, mpesa, card, bank, credit] }
+        customer_id: { type: [integer, 'null'] }
+        discount_percent: { type: number, minimum: 0, maximum: 100 }
         items:
           type: array
           minItems: 1
@@ -480,14 +600,22 @@ components:
             properties:
               product_id: { type: integer }
               quantity: { type: integer, minimum: 1, maximum: 100000 }
+              barcodes:
+                type: array
+                description: Required once per unit when the product uses individual barcode tracking.
+                items: { type: string, maxLength: 100 }
     Sale:
       type: object
       properties:
         id: { type: integer }
+        customer_id: { type: [integer, 'null'] }
         receipt_number: { type: string }
-        payment_method: { type: string, enum: [cash, credit] }
+        payment_method: { type: string, enum: [cash, mpesa, card, bank, credit] }
         status: { type: string, enum: [paid, on_credit] }
         subtotal: { type: string }
+        discount_amount: { type: string }
+        tax_amount: { type: string }
+        tax_rate: { type: string }
         total: { type: string }
         created_at: { type: string, format: date-time }
         items:

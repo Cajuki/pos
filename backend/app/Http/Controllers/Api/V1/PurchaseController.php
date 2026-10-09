@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class PurchaseController extends Controller
 {
@@ -74,6 +75,11 @@ class PurchaseController extends Controller
                 $product = Product::query()
                     ->where('business_id', $business->id)
                     ->findOrFail($item['product_id']);
+                if ($product->barcode_tracking_enabled) {
+                    throw ValidationException::withMessages([
+                        'items' => "Receive {$product->name} through individual barcode intake.",
+                    ]);
+                }
                 $lineTotal = $item['quantity'] * $item['unit_cost'];
 
                 $order->items()->create([

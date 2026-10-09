@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { CreditCard, DollarSign, PackageCheck, ShoppingBag } from 'lucide-react'
-import { getSales } from '../api/commerce'
+import { getBusinessSettings, getSales } from '../api/commerce'
 import { DataTable } from '../components/ui/DataTable'
 import { StatCard } from '../components/ui/StatCard'
+import { formatCurrency } from '../lib/utils'
 
 export default function ReportsPage() {
   const salesQuery = useQuery({ queryKey: ['sales'], queryFn: getSales })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const sales = salesQuery.data ?? []
+  const currency = settingsQuery.data?.currency ?? 'KES'
   const revenueCents = sales.reduce((total, sale) => total + toCents(sale.total), 0)
   const unitsSold = sales.reduce((total, sale) => total + sale.items.reduce((itemTotal, item) => itemTotal + item.quantity, 0), 0)
   const cashSales = sales.filter((sale) => sale.payment_method === 'cash').length
@@ -14,7 +17,7 @@ export default function ReportsPage() {
     ...sale,
     date: new Date(sale.created_at).toLocaleDateString(),
     units: sale.items.reduce((total, item) => total + item.quantity, 0),
-    revenue: `KES ${sale.total}`,
+    revenue: formatCurrency(Number(sale.total), currency),
   }))
 
   return (
@@ -28,7 +31,7 @@ export default function ReportsPage() {
 
       <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard title="Sales loaded" value={salesQuery.isPending ? '—' : String(sales.length)} hint="Recent API results" icon={<ShoppingBag className="h-5 w-5" />} />
-        <StatCard title="Revenue shown" value={salesQuery.isPending ? '—' : formatKes(revenueCents)} hint="From loaded sales" icon={<DollarSign className="h-5 w-5" />} />
+        <StatCard title="Revenue shown" value={salesQuery.isPending ? '—' : formatCurrency(revenueCents / 100, currency)} hint="From loaded sales" icon={<DollarSign className="h-5 w-5" />} />
         <StatCard title="Units shown" value={salesQuery.isPending ? '—' : String(unitsSold)} hint="From loaded sales" icon={<PackageCheck className="h-5 w-5" />} />
         <StatCard title="Cash transactions" value={salesQuery.isPending ? '—' : String(cashSales)} hint="Among loaded sales" icon={<CreditCard className="h-5 w-5" />} />
       </div>
@@ -53,8 +56,4 @@ export default function ReportsPage() {
 function toCents(amount: string): number {
   const [units, fraction = ''] = amount.split('.')
   return Number(units) * 100 + Number(fraction.padEnd(2, '0').slice(0, 2))
-}
-
-function formatKes(amountInCents: number): string {
-  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES' }).format(amountInCents / 100)
 }

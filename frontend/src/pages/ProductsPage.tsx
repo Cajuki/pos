@@ -3,14 +3,17 @@ import { useDeferredValue, useState, type FormEvent } from 'react'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { DataTable } from '../components/ui/DataTable'
-import { createProduct, getProducts } from '../api/commerce'
+import { createProduct, getBusinessSettings, getProducts } from '../api/commerce'
+import { formatCurrency } from '../lib/utils'
 
 export default function ProductsPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const deferredSearch = useDeferredValue(search)
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const productsQuery = useQuery({ queryKey: ['products', deferredSearch], queryFn: () => getProducts(deferredSearch) })
+  const currency = settingsQuery.data?.currency ?? 'KES'
   const createMutation = useMutation({
     mutationFn: createProduct,
     onSuccess: async () => {
@@ -45,7 +48,7 @@ export default function ProductsPage() {
 
   const rows = (productsQuery.data ?? []).map((product) => ({
     ...product,
-    price: `KES ${product.unit_price}`,
+    price: formatCurrency(Number(product.unit_price), currency),
     stock_status: product.quantity_on_hand <= 0 ? 'Out of stock' : product.quantity_on_hand <= product.reorder_level ? 'Low stock' : 'In stock',
   }))
 
@@ -68,8 +71,8 @@ export default function ProductsPage() {
             <label className="grid gap-1 text-sm font-medium text-graphite">Barcode (scan or type)<input name="barcode" maxLength={100} autoFocus placeholder="Scan barcode" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Product name<input required name="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Category<input name="category" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Selling price (KES)<input required name="unit_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Cost price (KES)<input name="cost_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Selling price ({currency})<input required name="unit_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Cost price ({currency})<input name="cost_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Initial quantity on hand<input name="quantity_on_hand" type="number" min="0" max="2147483647" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Reorder level<input name="reorder_level" type="number" min="0" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-3">

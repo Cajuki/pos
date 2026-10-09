@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ClipboardList, Plus, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { createPurchase, getProducts, getPurchases, getSuppliers, type Product } from '../api/commerce'
+import { createPurchase, getBusinessSettings, getProducts, getPurchases, getSuppliers, type Product } from '../api/commerce'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { DataTable } from '../components/ui/DataTable'
+import { formatCurrency } from '../lib/utils'
 
 interface DraftLine {
   product: Product
@@ -21,6 +22,7 @@ export default function PurchasesPage() {
   const [unitCost, setUnitCost] = useState('')
   const [lines, setLines] = useState<DraftLine[]>([])
   const purchasesQuery = useQuery({ queryKey: ['purchases'], queryFn: getPurchases })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const suppliersQuery = useQuery({ queryKey: ['suppliers'], queryFn: getSuppliers })
   const productsQuery = useQuery({ queryKey: ['products', 'all'], queryFn: () => getProducts() })
   const createMutation = useMutation({
@@ -41,6 +43,7 @@ export default function PurchasesPage() {
   const selectedProduct = productsQuery.data?.find((product) => String(product.id) === productId)
   const resolvedUnitCost = unitCost || selectedProduct?.cost_price || selectedProduct?.unit_price || ''
   const orderTotal = lines.reduce((sum, line) => sum + line.quantity * line.unit_cost, 0)
+  const currency = settingsQuery.data?.currency ?? 'KES'
 
   function addLine() {
     if (!selectedProduct) return
@@ -68,7 +71,7 @@ export default function PurchasesPage() {
     ...purchase,
     supplier_name: purchase.supplier?.name ?? 'Direct purchase',
     item_summary: purchase.items.map((item) => `${item.product_name} × ${item.quantity_received}`).join(', '),
-    total_display: formatKes(Number(purchase.total)),
+    total_display: formatCurrency(Number(purchase.total), currency),
     ordered_date: new Date(purchase.ordered_at).toLocaleDateString(),
   }))
 
@@ -104,19 +107,19 @@ export default function PurchasesPage() {
               </select>
             </label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Quantity<input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} className="rounded-lg border border-graphite/15 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Unit cost (KES)<input type="number" min="0" step="0.01" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder={selectedProduct?.cost_price ?? selectedProduct?.unit_price ?? '0.00'} className="rounded-lg border border-graphite/15 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Unit cost ({currency})<input type="number" min="0" step="0.01" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder={selectedProduct?.cost_price ?? selectedProduct?.unit_price ?? '0.00'} className="rounded-lg border border-graphite/15 px-3 py-2.5" /></label>
             <Button type="button" variant="secondary" disabled={!selectedProduct} onClick={addLine} icon={<Plus size={15} />}>Add line</Button>
           </div>
 
           {lines.length > 0 && <div className="overflow-x-auto rounded-lg border border-graphite/10">
             <table className="w-full min-w-[500px] text-left text-sm">
               <thead className="bg-champagne-light text-graphite"><tr><th className="px-3 py-2.5">Product</th><th className="px-3 py-2.5">Quantity</th><th className="px-3 py-2.5">Unit cost</th><th className="px-3 py-2.5">Line total</th><th className="px-3 py-2.5"><span className="sr-only">Remove</span></th></tr></thead>
-              <tbody>{lines.map((line, index) => <tr key={`${line.product.id}-${index}`} className="border-t border-graphite/10"><td className="px-3 py-2.5 font-medium">{line.product.name}</td><td className="px-3 py-2.5">{line.quantity}</td><td className="px-3 py-2.5">{formatKes(line.unit_cost)}</td><td className="px-3 py-2.5">{formatKes(line.quantity * line.unit_cost)}</td><td className="px-3 py-2.5"><button type="button" title="Remove line" aria-label={`Remove ${line.product.name}`} onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="grid h-8 w-8 place-items-center text-danger"><Trash2 size={15} /></button></td></tr>)}</tbody>
+              <tbody>{lines.map((line, index) => <tr key={`${line.product.id}-${index}`} className="border-t border-graphite/10"><td className="px-3 py-2.5 font-medium">{line.product.name}</td><td className="px-3 py-2.5">{line.quantity}</td><td className="px-3 py-2.5">{formatCurrency(line.unit_cost, currency)}</td><td className="px-3 py-2.5">{formatCurrency(line.quantity * line.unit_cost, currency)}</td><td className="px-3 py-2.5"><button type="button" title="Remove line" aria-label={`Remove ${line.product.name}`} onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="grid h-8 w-8 place-items-center text-danger"><Trash2 size={15} /></button></td></tr>)}</tbody>
             </table>
           </div>}
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-graphite/10 pt-4">
-            <p className="text-sm text-graphite/70">{lines.length} line{lines.length === 1 ? '' : 's'} <strong className="ml-2 text-graphite">Order total: {formatKes(orderTotal)}</strong></p>
+            <p className="text-sm text-graphite/70">{lines.length} line{lines.length === 1 ? '' : 's'} <strong className="ml-2 text-graphite">Order total: {formatCurrency(orderTotal, currency)}</strong></p>
             <div className="flex items-center gap-3">
               {createMutation.isError && <span role="alert" className="text-sm text-danger">Could not receive this order. Verify the supplier, products, and quantities.</span>}
               <Button type="submit" disabled={!lines.length || createMutation.isPending}>{createMutation.isPending ? 'Receiving...' : 'Receive purchase'}</Button>
@@ -145,8 +148,4 @@ export default function PurchasesPage() {
       </Card>
     </section>
   )
-}
-
-function formatKes(amount: number): string {
-  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES', minimumFractionDigits: 2 }).format(amount)
 }

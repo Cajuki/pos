@@ -41,8 +41,9 @@ import ResetPasswordPage from './features/auth/ResetPasswordPage'
 import LandingPage from './pages/LandingPage'
 import ReportsPage from './pages/ReportsPage'
 import SalesPage from './pages/SalesPage'
+import SettingsPage from './pages/SettingsPage'
 import StaffPage from './pages/StaffPage'
-import { getInitials } from './lib/utils'
+import { formatCurrency, getInitials } from './lib/utils'
 
 const navigation = [
   { label: 'Overview', to: '/dashboard', icon: LayoutDashboard },
@@ -78,7 +79,7 @@ function ApiStatus() {
   )
 }
 
-function Dashboard({ userName, businessName }: { userName: string; businessName: string }) {
+function Dashboard({ userName, businessName, currency }: { userName: string; businessName: string; currency: string }) {
   const { data: health, isSuccess } = useQuery({ queryKey: ['api-health'], queryFn: getApiHealth, retry: 1 })
   const summaryQuery = useQuery({ queryKey: ['report-summary', '7days'], queryFn: () => getReportSummary('7days'), retry: 1 })
   const salesQuery = useQuery({ queryKey: ['sales'], queryFn: getSales, retry: 1 })
@@ -89,9 +90,9 @@ function Dashboard({ userName, businessName }: { userName: string; businessName:
   const firstName = userName.trim().split(/\s+/)[0] || 'there'
   const [todayLabel] = useState(() => new Intl.DateTimeFormat('en-KE', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date()))
   const metrics = [
-    { label: "Today's sales", icon: CreditCard, value: summary ? formatKes(summary.today.revenue) : '—', note: 'Confirmed revenue' },
+    { label: "Today's sales", icon: CreditCard, value: summary ? formatCurrency(summary.today.revenue, currency) : '—', note: 'Confirmed revenue' },
     { label: 'Transactions', icon: Activity, value: summary ? String(summary.today.transactions) : '—', note: 'Completed today' },
-    { label: "Today's profit", icon: ChartNoAxesCombined, value: summary ? formatKes(summary.today.profit_estimate) : '—', note: 'Estimated margin' },
+    { label: "Today's profit", icon: ChartNoAxesCombined, value: summary ? formatCurrency(summary.today.profit_estimate, currency) : '—', note: 'Estimated margin' },
     { label: 'Low stock items', icon: Boxes, value: summary ? String(summary.inventory.low_stock_count) : '—', note: 'At or below reorder level' },
   ]
 
@@ -137,7 +138,7 @@ function Dashboard({ userName, businessName }: { userName: string; businessName:
             {summary?.sales_trend.length ? summary.sales_trend.slice(-7).map((day) => {
               const maxRevenue = Math.max(...summary.sales_trend.map((entry) => entry.total), 1)
               return (
-                <div className="trend-day" key={day.date} title={`${day.date}: ${formatKes(day.total)}`}>
+                <div className="trend-day" key={day.date} title={`${day.date}: ${formatCurrency(day.total, currency)}`}>
                   <span className="trend-bar" style={{ height: `${Math.max(8, (day.total / maxRevenue) * 100)}%` }} />
                   <small>{new Date(`${day.date}T00:00:00`).toLocaleDateString('en-KE', { weekday: 'short' })}</small>
                 </div>
@@ -150,7 +151,7 @@ function Dashboard({ userName, businessName }: { userName: string; businessName:
               </div>
             )}
             {summary?.sales_trend.length ? (
-              <div className="trend-caption"><strong>{formatKes(summary.period.revenue)}</strong><span>Last 7 days · {summary.period.transactions} transactions</span></div>
+              <div className="trend-caption"><strong>{formatCurrency(summary.period.revenue, currency)}</strong><span>Last 7 days · {summary.period.transactions} transactions</span></div>
             ) : null}
           </div>
         </article>
@@ -187,7 +188,7 @@ function Dashboard({ userName, businessName }: { userName: string; businessName:
             </Link>
           </div>
           {salesQuery.isError ? <div className="empty-state"><strong>Sales could not be loaded</strong><span>Check the API connection and business context.</span></div> : recentSales.length ? (
-            <div className="dashboard-record-list">{recentSales.map((sale) => <div key={sale.id}><span><strong>{sale.receipt_number}</strong><small>{new Date(sale.created_at).toLocaleString()}</small></span><b>{formatKes(Number(sale.total) * 100)}</b></div>)}</div>
+            <div className="dashboard-record-list">{recentSales.map((sale) => <div key={sale.id}><span><strong>{sale.receipt_number}</strong><small>{new Date(sale.created_at).toLocaleString()}</small></span><b>{formatCurrency(Number(sale.total), currency)}</b></div>)}</div>
           ) : <div className="empty-state"><div className="empty-icon"><CreditCard size={19} /></div><strong>{salesQuery.isPending ? 'Loading sales' : 'No sales recorded yet'}</strong><span>Completed transactions will appear here.</span></div>}
         </article>
 
@@ -209,24 +210,6 @@ function Dashboard({ userName, businessName }: { userName: string; businessName:
 
       <p className="dashboard-footnote"><i /> Figures update from confirmed transactions only</p>
     </div>
-  )
-}
-
-function formatKes(amount: number): string {
-  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES', maximumFractionDigits: 0 }).format(amount)
-}
-
-function ModulePage({ title }: { title: string }) {
-  return (
-    <section className="module-page">
-      <p className="eyebrow">BUSINESS OPERATIONS</p>
-      <h1>{title}</h1>
-      <div className="module-empty panel">
-        <div className="empty-icon"><Settings2 size={20} /></div>
-        <strong>{title} data is not connected yet</strong>
-        <span>This workspace shows live information only. Connect the module API to manage {title.toLowerCase()} here.</span>
-      </div>
-    </section>
   )
 }
 
@@ -273,6 +256,7 @@ function ProtectedAppShell() {
     retry: 1,
   })
   const businessName = businessQuery.data?.name ?? localStorage.getItem('pos_business_name') ?? 'Business workspace'
+  const businessCurrency = businessQuery.data?.currency ?? 'KES'
   const userRole = businessQuery.data?.role ?? localStorage.getItem('pos_user_role') ?? 'Member'
   const canManageStaff = userRole === 'owner' || userRole === 'admin'
 
@@ -328,10 +312,10 @@ function ProtectedAppShell() {
             <strong>Need a hand?</strong>
             <span>Visit the help centre</span>
           </div>
-          <NavLink to="/settings" className="nav-item settings-link">
+          {canManageStaff && <NavLink onClick={() => setMobileOpen(false)} to="/settings" className="nav-item settings-link">
             <Settings2 size={18} />
             <span>Settings</span>
-          </NavLink>
+          </NavLink>}
           <div className="user-profile">
             <div className="avatar">{getInitials(profile.name)}</div>
             <div className="user-label">
@@ -383,7 +367,7 @@ function ProtectedAppShell() {
         <div className="page-content">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard userName={profile.name} businessName={businessName} />} />
+            <Route path="/dashboard" element={<Dashboard userName={profile.name} businessName={businessName} currency={businessCurrency} />} />
             <Route path="/pos" element={<POSPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
@@ -392,13 +376,13 @@ function ProtectedAppShell() {
             <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/team" element={canManageStaff ? <StaffPage /> : <Navigate to="/dashboard" replace />} />
-            <Route path="/settings" element={<ModulePage title="Settings" />} />
+            <Route path="/settings" element={canManageStaff ? <SettingsPage /> : <Navigate to="/dashboard" replace />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
 
           <footer className="app-footer">
             <span>Poss workspace</span>
-            <span>Kenya <i>·</i> KES</span>
+            <span>{businessQuery.data?.timezone ?? 'Africa/Nairobi'} <i>·</i> {businessCurrency}</span>
             <a href="mailto:support@poss.local">Support</a>
           </footer>
         </div>

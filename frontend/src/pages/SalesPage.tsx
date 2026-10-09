@@ -1,15 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
-import { getSales } from '../api/commerce'
+import { getBusinessSettings, getSales } from '../api/commerce'
 import { Card } from '../components/ui/Card'
 import { DataTable } from '../components/ui/DataTable'
+import { formatCurrency } from '../lib/utils'
 
 export default function SalesPage() {
   const salesQuery = useQuery({ queryKey: ['sales'], queryFn: getSales })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
+  const currency = settingsQuery.data?.currency ?? 'KES'
   const sales = (salesQuery.data ?? []).map((sale) => ({
     ...sale,
     invoice: sale.receipt_number,
-    channel: sale.payment_method === 'credit' ? 'Store credit' : 'Cash',
-    total_label: `KES ${sale.total}`,
+    customer_name: sale.customer?.name ?? 'Walk-in',
+    channel: sale.payment_method === 'credit' ? 'Store credit' : sale.payment_method.toUpperCase(),
+    discount_label: Number(sale.discount_amount) > 0 ? formatCurrency(Number(sale.discount_amount), currency) : '—',
+    total_label: formatCurrency(Number(sale.total), currency),
     date: new Date(sale.created_at).toLocaleString(),
   }))
 
@@ -34,7 +39,9 @@ export default function SalesPage() {
           columns={[
             { header: 'Invoice', accessor: 'invoice' },
             { header: 'Date', accessor: 'date' },
+            { header: 'Customer', accessor: 'customer_name' },
             { header: 'Channel', accessor: 'channel' },
+            { header: 'Discount', accessor: 'discount_label' },
             { header: 'Total', accessor: 'total_label' },
             { header: 'Status', accessor: 'status' },
           ]}

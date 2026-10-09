@@ -173,6 +173,104 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseCount('sales', 2);
     }
 
+    public function test_checkout_applies_business_tax_settings_and_rejects_disabled_tenders(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update(['settings' => [
+            ...$business->posSettings(),
+            'tax_enabled' => true,
+            'tax_rate' => '10.00',
+            'tax_inclusive' => false,
+            'payment_methods' => ['cash'],
+            'default_payment_method' => 'cash',
+        ]]);
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'TAX-001',
+            'name' => 'Taxable item',
+            'unit_price' => 100,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 2,
+            'reason' => 'Opening count',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertCreated()
+            ->assertJsonPath('data.subtotal', '100.00')
+            ->assertJsonPath('data.tax_amount', '10.00')
+            ->assertJsonPath('data.tax_rate', '10.00')
+            ->assertJsonPath('data.total', '110.00');
+
+        $business->update(['settings' => [
+            ...$business->posSettings(),
+            'tax_inclusive' => true,
+        ]]);
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertCreated()
+            ->assertJsonPath('data.tax_amount', '9.09')
+            ->assertJsonPath('data.total', '100.00');
+
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'mpesa',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertUnprocessable()->assertJsonValidationErrors('payment_method');
+        $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '210.00']);
+        $this->assertDatabaseCount('sales', 2);
+    }
+
+    public function test_sale_can_be_linked_to_a_business_customer_and_apply_configured_discount(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update(['settings' => [
+            ...$business->posSettings(),
+            'discount_enabled' => true,
+            'max_discount_percent' => '15.00',
+        ]]);
+        $this->useBusinessContext($user, $business);
+        $customer = $this->postJson('/api/v1/customers', [
+            'name' => 'Asha Customer',
+            'phone' => '+254700000001',
+        ])->assertCreated()->json('data');
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'DISC-001',
+            'name' => 'Discounted item',
+            'unit_price' => 200,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 2,
+            'reason' => 'Opening count',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+
+        $this->postJson('/api/v1/sales', [
+            'customer_id' => $customer['id'],
+            'discount_percent' => 15,
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertCreated()
+            ->assertJsonPath('data.customer_id', $customer['id'])
+            ->assertJsonPath('data.customer.name', 'Asha Customer')
+            ->assertJsonPath('data.subtotal', '200.00')
+            ->assertJsonPath('data.discount_amount', '30.00')
+            ->assertJsonPath('data.total', '170.00');
+
+        $this->postJson('/api/v1/sales', [
+            'customer_id' => $customer['id'],
+            'discount_percent' => 15.01,
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertUnprocessable()->assertJsonValidationErrors('discount_percent');
+        $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '170.00']);
+    }
+
     public function test_products_and_sales_are_scoped_to_business_membership(): void
     {
         [$owner, $business] = $this->createBusinessContext();
@@ -214,6 +312,86 @@ class ProductInventorySalesTest extends TestCase
 
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 0]);
         $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_individually_barcoded_stock_is_received_scanned_and_consumed_once(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'MANDAZI-001',
+            'name' => 'Mandazi',
+            'category' => 'Bakery',
+            'unit_price' => 10,
+        ])->assertCreated()->json('data');
+
+        $this->getJson('/api/v1/products/barcode/UNIT-0001')
+            ->assertOk()
+            ->assertJsonPath('data', null);
+        $this->postJson('/api/v1/inventory/barcodes/receive', [
+            'product_id' => $product['id'],
+            'barcode' => 'UNIT-0001',
+        ])->assertCreated()
+            ->assertJsonPath('data.quantity_on_hand', 1);
+        $this->postJson('/api/v1/inventory/barcodes/receive', [
+            'product_id' => $product['id'],
+            'barcode' => 'UNIT-0002',
+        ])->assertCreated()
+            ->assertJsonPath('data.quantity_on_hand', 2);
+
+        $this->getJson('/api/v1/products/barcode/UNIT-0001')
+            ->assertOk()
+            ->assertJsonPath('data.product.id', $product['id'])
+            ->assertJsonPath('data.tracked_barcode', 'UNIT-0001')
+            ->assertJsonPath('data.status', 'in_stock');
+        $this->getJson('/api/v1/inventory')
+            ->assertOk()
+            ->assertJsonPath('data.0.quantity_on_hand', 2)
+            ->assertJsonPath('data.0.barcode_tracking_enabled', true);
+
+        $this->postJson('/api/v1/inventory/barcodes/receive', [
+            'product_id' => $product['id'],
+            'barcode' => 'UNIT-0001',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('barcode');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 1,
+            'reason' => 'Must use barcode intake',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('product_id');
+
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('items.0.barcodes');
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1, 'barcodes' => ['UNIT-0001']]],
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.barcodes.0', 'UNIT-0001')
+            ->json('data');
+
+        $this->assertDatabaseHas('product_barcodes', [
+            'business_id' => $business->id,
+            'product_id' => $product['id'],
+            'sale_item_id' => $sale['items'][0]['id'] ?? null,
+            'barcode' => 'UNIT-0001',
+            'status' => 'sold',
+        ]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 1]);
+        $this->getJson('/api/v1/products/barcode/UNIT-0001')
+            ->assertOk()
+            ->assertJsonPath('data.tracked_barcode', null)
+            ->assertJsonPath('data.status', 'sold');
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1, 'barcodes' => ['UNIT-0001']]],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('items.0.barcodes');
+        $this->assertDatabaseCount('sales', 1);
     }
 
     public function test_purchase_orders_reject_products_and_suppliers_from_another_business(): void

@@ -603,6 +603,22 @@ button {
 .pos-cart-empty small { font-size: 9px; }
 
 .pos-payment-area { padding: 15px 16px 16px; background: #fafaf6; }
+.pos-customer-picker { position: relative; display: grid; gap: 6px; margin-bottom: 12px; }
+.pos-customer-picker > label, .pos-discount-control { color: #72776e; font-size: 10px; font-weight: 650; }
+.pos-customer-picker > label small { color: #96998f; font-size: 9px; font-weight: 400; }
+.pos-customer-picker > input, .pos-discount-control input { width: 100%; min-height: 34px; padding: 0 9px; border: 1px solid #e2e4da; border-radius: 4px; color: var(--pos-ink); background: white; font-size: 10px; }
+.pos-selected-customer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid #d4dfce; border-radius: 4px; background: #f2f7ed; }
+.pos-selected-customer > span { display: grid; gap: 3px; }
+.pos-selected-customer strong, .pos-customer-results strong { color: var(--pos-ink); font-size: 10px; }
+.pos-selected-customer small, .pos-customer-results small { color: var(--pos-muted); font-size: 9px; }
+.pos-selected-customer button { display: grid; width: 26px; height: 26px; place-items: center; border: 0; color: var(--pos-muted); background: transparent; cursor: pointer; }
+.pos-customer-results { position: absolute; z-index: 5; top: 100%; right: 0; left: 0; display: grid; max-height: 180px; overflow-y: auto; border: 1px solid #e2e4da; border-radius: 4px; background: white; box-shadow: 0 8px 20px rgba(37, 37, 37, .12); }
+.pos-customer-results > span { padding: 10px; color: var(--pos-muted); font-size: 10px; }
+.pos-customer-results button { display: grid; gap: 3px; padding: 9px 10px; border: 0; border-bottom: 1px solid #eff0e9; background: white; text-align: left; cursor: pointer; }
+.pos-customer-results button:hover { background: #f4f6ef; }
+.pos-discount-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 9px; margin-bottom: 10px; }
+.pos-discount-control input { grid-column: 1; }
+.pos-discount-control small { grid-column: 2; grid-row: 2; color: var(--pos-muted); font-size: 9px; font-weight: 400; }
 .pos-total-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #73786f; font-size: 10px; }
 .pos-total-row small { color: #96998f; font-size: 9px; }
 .pos-total-row strong { color: var(--pos-ink); font-size: 11px; font-weight: 700; }
@@ -796,4 +812,3 @@ button {
 	.pos-tender-options { gap: 3px; }
 	.pos-tender-options button span { font-size: 8px; }
 }
-

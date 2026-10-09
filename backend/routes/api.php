@@ -51,6 +51,8 @@ Route::prefix('v1')->group(function (): void {
         Route::middleware('business')->group(function (): void {
             Route::get('/business/staff', [BusinessController::class, 'staff'])->name('api.v1.business.staff.index');
             Route::post('/business/staff', [BusinessController::class, 'addStaff'])->name('api.v1.business.staff.store');
+            Route::get('/business/settings', [BusinessController::class, 'settings'])->name('api.v1.business.settings.show');
+            Route::put('/business/settings', [BusinessController::class, 'updateSettings'])->name('api.v1.business.settings.update');
         });
         Route::get('/businesses/{business}', [BusinessController::class, 'show'])
             ->middleware('business')->name('api.v1.businesses.show');
@@ -58,6 +60,7 @@ Route::prefix('v1')->group(function (): void {
         Route::middleware('business')->group(function (): void {
             // Products & Categories
             Route::apiResource('products', ProductController::class)->only(['index', 'store', 'show', 'update']);
+            Route::get('/products/barcode/{barcode}', [ProductController::class, 'barcode'])->name('api.v1.products.barcode');
             Route::get('/categories', [CategoryController::class, 'index'])->name('api.v1.categories.index');
             Route::post('/categories', [CategoryController::class, 'store'])->name('api.v1.categories.store');
 
@@ -65,6 +68,7 @@ Route::prefix('v1')->group(function (): void {
             Route::get('/inventory', [InventoryController::class, 'index'])->name('api.v1.inventory.index');
             Route::get('/inventory/movements', [InventoryController::class, 'movements'])->name('api.v1.inventory.movements');
             Route::post('/inventory/adjustments', [InventoryController::class, 'adjust'])->name('api.v1.inventory.adjustments');
+            Route::post('/inventory/barcodes/receive', [InventoryController::class, 'receiveBarcode'])->name('api.v1.inventory.barcodes.receive');
 
             // Sales & Checkout
             Route::apiResource('sales', SaleController::class)->only(['index', 'store', 'show']);

@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\CashRegister;
 use App\Models\CashRegisterSession;
+use App\Models\Customer;
 use App\Models\InventoryStock;
 use App\Models\Product;
+use App\Models\ProductBarcode;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
@@ -21,7 +23,7 @@ class SaleController extends Controller
         $business = $request->attributes->get('business');
         $sales = Sale::query()
             ->where('business_id', $business->id)
-            ->with('items')
+            ->with(['items.productBarcodes', 'customer'])
             ->latest()
             ->paginate(25);
 
@@ -36,14 +38,41 @@ class SaleController extends Controller
         $business = $request->attributes->get('business');
         $validated = $request->validate([
             'payment_method' => ['required', 'in:cash,credit,mpesa,card,bank'],
+            'customer_id' => ['nullable', 'integer'],
+            'discount_percent' => ['sometimes', 'numeric', 'min:0', 'max:100'],
             'items' => ['required', 'array', 'min:1', 'max:100'],
             'items.*.product_id' => ['required', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:100000'],
+            'items.*.barcodes' => ['sometimes', 'array'],
+            'items.*.barcodes.*' => ['required', 'string', 'max:100', 'distinct'],
         ]);
+        $settings = $business->posSettings();
 
-        $sale = DB::transaction(function () use ($business, $request, $validated): Sale {
+        if (! in_array($validated['payment_method'], $settings['payment_methods'], true)) {
+            throw ValidationException::withMessages([
+                'payment_method' => 'This payment method is disabled for the business.',
+            ]);
+        }
+        if (($validated['discount_percent'] ?? 0) > 0
+            && (! $settings['discount_enabled'] || $validated['discount_percent'] > (float) $settings['max_discount_percent'])) {
+            throw ValidationException::withMessages([
+                'discount_percent' => 'This discount exceeds the discount limit configured for the business.',
+            ]);
+        }
+
+        $sale = DB::transaction(function () use ($business, $request, $validated, $settings): Sale {
             $items = collect($validated['items'])->sortBy('product_id')->values();
             $productIds = $items->pluck('product_id');
+            $customer = null;
+            if (! empty($validated['customer_id'])) {
+                $customer = Customer::query()
+                    ->where('business_id', $business->id)
+                    ->where('status', 'active')
+                    ->find($validated['customer_id']);
+                if (! $customer) {
+                    abort(404, 'Customer not found.');
+                }
+            }
             $products = Product::query()
                 ->where('business_id', $business->id)
                 ->where('is_active', true)
@@ -96,6 +125,37 @@ class SaleController extends Controller
                     ]);
                 }
 
+                $itemBarcodes = $item['barcodes'] ?? [];
+                if ($product->barcode_tracking_enabled && count($itemBarcodes) !== $item['quantity']) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.barcodes" => "Scan each individual {$product->name} barcode before checkout.",
+                    ]);
+                }
+                if (! $product->barcode_tracking_enabled && $itemBarcodes !== []) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.barcodes" => 'This product does not use individual barcode tracking.',
+                    ]);
+                }
+                if ($product->barcode_tracking_enabled && $itemBarcodes === []) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.barcodes" => "Scan each individual {$product->name} barcode before checkout.",
+                    ]);
+                }
+                if ($itemBarcodes !== []) {
+                    $availableBarcodes = ProductBarcode::query()
+                        ->where('business_id', $business->id)
+                        ->where('product_id', $product->id)
+                        ->where('status', 'in_stock')
+                        ->whereIn('barcode', $itemBarcodes)
+                        ->lockForUpdate()
+                        ->get();
+                    if ($availableBarcodes->count() !== count($itemBarcodes)) {
+                        throw ValidationException::withMessages([
+                            "items.{$index}.barcodes" => 'One or more scanned barcodes are not in stock or have already been sold.',
+                        ]);
+                    }
+                }
+
                 $lineTotalCents = $this->toCents($product->unit_price) * $item['quantity'];
                 if ($lineTotalCents > 999999999999 - $subtotalCents) {
                     throw ValidationException::withMessages(['items' => 'The sale total exceeds the supported amount.']);
@@ -103,25 +163,44 @@ class SaleController extends Controller
                 $subtotalCents += $lineTotalCents;
             }
 
+            $discountBasisPoints = (int) round((float) ($validated['discount_percent'] ?? 0) * 100);
+            $discountCents = (int) round($subtotalCents * $discountBasisPoints / 10000);
+            $taxableCents = $subtotalCents - $discountCents;
+            $taxRateBasisPoints = $settings['tax_enabled'] ? (int) round((float) $settings['tax_rate'] * 100) : 0;
+            $taxCents = $taxRateBasisPoints === 0
+                ? 0
+                : ($settings['tax_inclusive']
+                    ? (int) round($taxableCents * $taxRateBasisPoints / (10000 + $taxRateBasisPoints))
+                    : (int) round($taxableCents * $taxRateBasisPoints / 10000));
+            $totalCents = $settings['tax_inclusive'] ? $taxableCents : $taxableCents + $taxCents;
+
+            if ($totalCents > 999999999999) {
+                throw ValidationException::withMessages(['items' => 'The sale total exceeds the supported amount.']);
+            }
+
             $receiptNumber = 'POS-'.now()->format('Ymd').'-'.strtoupper(bin2hex(random_bytes(4)));
             $sale = Sale::create([
                 'business_id' => $business->id,
                 'user_id' => $request->user()->id,
+                'customer_id' => $customer?->id,
                 'receipt_number' => $receiptNumber,
                 'payment_method' => $validated['payment_method'],
                 'status' => $validated['payment_method'] === 'credit' ? 'on_credit' : 'paid',
                 'subtotal' => $this->fromCents($subtotalCents),
-                'total' => $this->fromCents($subtotalCents),
+                'discount_amount' => $this->fromCents($discountCents),
+                'tax_amount' => $this->fromCents($taxCents),
+                'tax_rate' => number_format($taxRateBasisPoints / 100, 2, '.', ''),
+                'total' => $this->fromCents($totalCents),
             ]);
 
-            foreach ($items as $item) {
+            foreach ($items as $index => $item) {
                 $product = $products->get($item['product_id']);
                 $stock = $stocks->get($item['product_id']);
                 $quantityBefore = $stock->quantity_on_hand;
                 $quantityAfter = $quantityBefore - $item['quantity'];
                 $lineTotalCents = $this->toCents($product->unit_price) * $item['quantity'];
 
-                $sale->items()->create([
+                $saleItem = $sale->items()->create([
                     'product_id' => $product->id,
                     'sku' => $product->sku,
                     'product_name' => $product->name,
@@ -130,6 +209,14 @@ class SaleController extends Controller
                     'unit_cost' => $product->cost_price,
                     'line_total' => $this->fromCents($lineTotalCents),
                 ]);
+                if (! empty($item['barcodes'])) {
+                    ProductBarcode::query()
+                        ->where('business_id', $business->id)
+                        ->where('product_id', $product->id)
+                        ->where('status', 'in_stock')
+                        ->whereIn('barcode', $item['barcodes'])
+                        ->update(['status' => 'sold', 'sale_item_id' => $saleItem->id]);
+                }
                 $stock->update(['quantity_on_hand' => $quantityAfter]);
                 StockMovement::create([
                     'business_id' => $business->id,
@@ -148,12 +235,12 @@ class SaleController extends Controller
             if ($validated['payment_method'] === 'cash') {
                 $session->update([
                     'expected_cash' => $this->fromCents(
-                        $this->toCents($session->expected_cash) + $subtotalCents
+                        $this->toCents($session->expected_cash) + $totalCents
                     ),
                 ]);
             }
 
-            return $sale->load('items');
+            return $sale->load('items.productBarcodes');
         });
 
         return response()->json(['data' => $this->saleData($sale)], 201);
@@ -162,7 +249,7 @@ class SaleController extends Controller
     public function show(Request $request, int $sale): JsonResponse
     {
         $business = $request->attributes->get('business');
-        $record = Sale::query()->where('business_id', $business->id)->with('items')->findOrFail($sale);
+        $record = Sale::query()->where('business_id', $business->id)->with(['items.productBarcodes', 'customer'])->findOrFail($sale);
 
         return response()->json(['data' => $this->saleData($record)]);
     }
@@ -170,8 +257,13 @@ class SaleController extends Controller
     private function saleData(Sale $sale): array
     {
         return [
-            ...$sale->only(['id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'total', 'created_at']),
-            'items' => $sale->items->map(fn ($item): array => $item->only(['product_id', 'sku', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total']))->all(),
+            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'created_at']),
+            'customer' => $sale->customer?->only(['id', 'name', 'phone', 'email']),
+            'items' => $sale->items->map(fn ($item): array => [
+                ...$item->only(['product_id', 'sku', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total']),
+                'id' => $item->id,
+                'barcodes' => $item->productBarcodes->pluck('barcode')->all(),
+            ])->all(),
         ];
     }
 

@@ -7,6 +7,7 @@ export interface Product {
   category: string | null
   category_id?: number | null
   barcode?: string | null
+  barcode_tracking_enabled: boolean
   description: string | null
   unit_price: string
   cost_price: string | null
@@ -31,6 +32,7 @@ export interface InventoryItem {
   quantity_on_hand: number
   reorder_level: number
   is_low_stock: boolean
+  barcode_tracking_enabled: boolean
 }
 
 export interface StockMovement {
@@ -45,7 +47,7 @@ export interface StockMovement {
 }
 
 export interface SaleItem {
-  id?: number
+  id: number
   product_id: number
   sku: string
   product_name: string
@@ -53,17 +55,48 @@ export interface SaleItem {
   unit_price: string
   unit_cost: string | null
   line_total: string
+  barcodes?: string[]
 }
 
 export interface Sale {
   id: number
+  customer_id: number | null
+  customer: Pick<Customer, 'id' | 'name' | 'phone' | 'email'> | null
   receipt_number: string
   payment_method: 'cash' | 'mpesa' | 'card' | 'bank' | 'credit' | string
   status: string
   subtotal: string
+  discount_amount: string
+  tax_amount: string
+  tax_rate: string
   total: string
   created_at: string
   items: SaleItem[]
+}
+
+export interface PosPreferences {
+  business_phone: string
+  business_email: string
+  business_address: string
+  tax_number: string
+  tax_enabled: boolean
+  tax_rate: string
+  tax_inclusive: boolean
+  discount_enabled: boolean
+  max_discount_percent: string
+  payment_methods: Array<'cash' | 'mpesa' | 'card' | 'bank' | 'credit'>
+  default_payment_method: 'cash' | 'mpesa' | 'card' | 'bank' | 'credit'
+  receipt_show_business_details: boolean
+  receipt_footer: string
+}
+
+export interface BusinessSettings {
+  id: string
+  name: string
+  currency: string
+  timezone: string
+  role: string
+  settings: PosPreferences
 }
 
 export interface Customer {
@@ -205,11 +238,15 @@ export async function getProducts(search = '', active?: boolean): Promise<Produc
   return response.data.data
 }
 
-export async function getProductByBarcode(barcode: string): Promise<Product | null> {
-  const response = await apiClient.get<PaginatedResponse<Product>>('/products', {
-    params: { barcode, active: 1 },
-  })
-  return response.data.data[0] ?? null
+export interface ProductBarcodeLookup {
+  product: Product
+  tracked_barcode: string | null
+  status: 'in_stock' | 'sold' | 'product'
+}
+
+export async function getProductByBarcode(barcode: string): Promise<ProductBarcodeLookup | null> {
+  const response = await apiClient.get<{ data: ProductBarcodeLookup | null }>(`/products/barcode/${encodeURIComponent(barcode)}`)
+  return response.data.data
 }
 
 export async function createProduct(product: {
@@ -267,6 +304,11 @@ export async function adjustStock(payload: {
   return response.data.data
 }
 
+export async function receiveBarcodeStock(payload: { product_id: number; barcode: string }) {
+  const response = await apiClient.post<{ data: { barcode: string; product_id: number; product_name: string; quantity_on_hand: number } }>('/inventory/barcodes/receive', payload)
+  return response.data.data
+}
+
 export async function getStockMovements(): Promise<StockMovement[]> {
   const response = await apiClient.get<PaginatedResponse<StockMovement>>('/inventory/movements')
   return response.data.data
@@ -280,9 +322,26 @@ export async function getSales(): Promise<Sale[]> {
 
 export async function createSale(payload: {
   payment_method: 'cash' | 'mpesa' | 'card' | 'bank' | 'credit'
-  items: Array<{ product_id: number; quantity: number }>
+  customer_id?: number
+  discount_percent?: number
+  items: Array<{ product_id: number; quantity: number; barcodes?: string[] }>
 }): Promise<Sale> {
   const response = await apiClient.post<{ data: Sale }>('/sales', payload)
+  return response.data.data
+}
+
+export async function getBusinessSettings(): Promise<BusinessSettings> {
+  const response = await apiClient.get<{ data: BusinessSettings }>('/business/settings')
+  return response.data.data
+}
+
+export async function updateBusinessSettings(settings: BusinessSettings): Promise<BusinessSettings> {
+  const response = await apiClient.put<{ data: BusinessSettings }>('/business/settings', {
+    name: settings.name,
+    currency: settings.currency,
+    timezone: settings.timezone,
+    settings: settings.settings,
+  })
   return response.data.data
 }
 

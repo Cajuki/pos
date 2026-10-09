@@ -120,6 +120,65 @@ class AuthenticationTest extends TestCase
         $this->assertDatabaseCount('users', 1);
     }
 
+    public function test_business_admin_can_save_pos_settings_for_all_members_to_use(): void
+    {
+        $owner = User::factory()->create();
+        $business = Business::create(['name' => 'Settings Store']);
+        $owner->businesses()->attach($business, ['role' => 'owner']);
+        $this->actingAs($owner, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $settings = [
+            'name' => 'Updated Settings Store',
+            'currency' => 'USD',
+            'timezone' => 'America/New_York',
+            'settings' => [
+                'business_phone' => '+1 555 0100',
+                'business_email' => 'store@example.test',
+                'business_address' => '12 Main Street',
+                'tax_number' => 'TAX-123',
+                'tax_enabled' => true,
+                'tax_rate' => '8.25',
+                'tax_inclusive' => false,
+                'discount_enabled' => true,
+                'max_discount_percent' => '15.00',
+                'discount_enabled' => true,
+                'max_discount_percent' => '15.00',
+                'payment_methods' => ['card', 'cash'],
+                'default_payment_method' => 'card',
+                'receipt_show_business_details' => true,
+                'receipt_footer' => 'Thank you.',
+            ],
+        ];
+
+        $this->putJson('/api/v1/business/settings', $settings)
+            ->assertOk()
+            ->assertJsonPath('data.currency', 'USD')
+            ->assertJsonPath('data.settings.tax_rate', '8.25')
+            ->assertJsonPath('data.settings.default_payment_method', 'card');
+
+        $this->getJson('/api/v1/business/settings')
+            ->assertOk()
+            ->assertJsonPath('data.name', 'Updated Settings Store')
+            ->assertJsonPath('data.settings.payment_methods.0', 'card');
+    }
+
+    public function test_non_admin_member_cannot_update_pos_settings(): void
+    {
+        $manager = User::factory()->create();
+        $business = Business::create(['name' => 'Settings Store']);
+        $manager->businesses()->attach($business, ['role' => 'manager']);
+        $this->actingAs($manager, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $this->putJson('/api/v1/business/settings', [
+            'name' => 'Not allowed',
+            'currency' => 'KES',
+            'timezone' => 'Africa/Nairobi',
+            'settings' => [],
+        ])->assertForbidden();
+
+        $this->assertDatabaseHas('businesses', ['id' => $business->id, 'name' => 'Settings Store']);
+    }
+
     public function test_logout_revokes_the_current_token(): void
     {
         $user = User::factory()->create();

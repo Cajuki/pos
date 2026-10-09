@@ -23,23 +23,38 @@ import { useDeferredValue, useState, type KeyboardEvent } from 'react'
 import {
   closeCashRegister,
   createSale,
+  getCustomers,
   getCashRegisterStatus,
   getCategories,
+  getBusinessSettings,
   getProductByBarcode,
   getProducts,
   openCashRegister,
   type Product,
   type Sale,
 } from '../api/commerce'
+import { formatCurrency } from '../lib/utils'
+
+const paymentOptions = [
+  { value: 'cash', label: 'Cash', icon: Banknote },
+  { value: 'mpesa', label: 'M-Pesa', icon: Smartphone },
+  { value: 'card', label: 'Card', icon: CreditCard },
+  { value: 'bank', label: 'Bank', icon: WalletCards },
+  { value: 'credit', label: 'Credit', icon: Clock3 },
+] as const
 
 export default function PosPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [scanMessage, setScanMessage] = useState('')
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [selectedCustomer, setSelectedCustomer] = useState<{ id: number; name: string; phone: string | null } | null>(null)
+  const [discountPercent, setDiscountPercent] = useState('0')
   const [selectedCategory, setSelectedCategory] = useState('All items')
   const [cart, setCart] = useState<Record<number, number>>({})
+  const [cartBarcodes, setCartBarcodes] = useState<Record<number, string[]>>({})
   const [selectedProducts, setSelectedProducts] = useState<Record<number, Product>>({})
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'mpesa' | 'card' | 'bank' | 'credit'>('cash')
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<typeof paymentOptions[number]['value'] | null>(null)
   const [receipt, setReceipt] = useState<Sale | null>(null)
   const [openingBalance, setOpeningBalance] = useState('')
   const [actualCash, setActualCash] = useState('')
@@ -49,6 +64,12 @@ export default function PosPage() {
     queryKey: ['pos-products', deferredSearch],
     queryFn: () => getProducts(deferredSearch, true),
   })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
+  const customerQuery = useQuery({
+    queryKey: ['customers', 'pos', customerSearch],
+    queryFn: () => getCustomers(customerSearch),
+    enabled: customerSearch.trim().length >= 2,
+  })
   const categoriesQuery = useQuery({ queryKey: ['categories'], queryFn: getCategories })
   const registerQuery = useQuery({ queryKey: ['cash-register'], queryFn: getCashRegisterStatus, retry: 1 })
   const checkoutMutation = useMutation({
@@ -56,6 +77,7 @@ export default function PosPage() {
     onSuccess: async (sale) => {
       setReceipt(sale)
       setCart({})
+      setCartBarcodes({})
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
         queryClient.invalidateQueries({ queryKey: ['products'] }),
@@ -93,14 +115,39 @@ export default function PosPage() {
   const subtotalCents = cartLines.reduce((total, line) => total + toCents(line.product.unit_price) * line.quantity, 0)
   const itemCount = cartLines.reduce((count, line) => count + line.quantity, 0)
   const registerOpen = registerQuery.data?.is_open ?? false
+  const businessSettings = settingsQuery.data
+  const preferences = businessSettings?.settings
+  const taxRate = preferences?.tax_enabled ? Number(preferences.tax_rate) : 0
+  const discountRate = Number(discountPercent) || 0
+  const discountCents = Math.round(subtotalCents * Math.min(discountRate, 100) / 100)
+  const discountedTaxCents = taxRate === 0
+    ? 0
+    : preferences?.tax_inclusive
+      ? Math.round((subtotalCents - discountCents) * taxRate / (100 + taxRate))
+      : Math.round((subtotalCents - discountCents) * taxRate / 100)
+  const discountedTotalCents = (preferences?.tax_inclusive ? subtotalCents - discountCents : subtotalCents - discountCents + discountedTaxCents)
+  const currency = businessSettings?.currency ?? 'KES'
+  const enabledPaymentMethods = preferences?.payment_methods ?? []
+  const defaultPaymentMethod = preferences?.default_payment_method
+  const fallbackPaymentMethod = defaultPaymentMethod && enabledPaymentMethods.includes(defaultPaymentMethod)
+    ? defaultPaymentMethod
+    : enabledPaymentMethods[0] ?? 'cash'
+  const paymentMethod = selectedPaymentMethod && enabledPaymentMethods.includes(selectedPaymentMethod)
+    ? selectedPaymentMethod
+    : fallbackPaymentMethod
 
-  function addProduct(product: Product) {
+  function addProduct(product: Product, trackedBarcode?: string) {
     setReceipt(null)
     setSelectedProducts((current) => ({ ...current, [product.id]: product }))
     setCart((current) => ({
       ...current,
-      [product.id]: Math.min((current[product.id] ?? 0) + 1, product.quantity_on_hand),
+      [product.id]: product.barcode_tracking_enabled
+        ? (current[product.id] ?? 0) + 1
+        : Math.min((current[product.id] ?? 0) + 1, product.quantity_on_hand),
     }))
+    if (trackedBarcode) {
+      setCartBarcodes((current) => ({ ...current, [product.id]: [...(current[product.id] ?? []), trackedBarcode] }))
+    }
   }
 
   async function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -112,10 +159,20 @@ export default function PosPage() {
     const scannedBarcode = search.trim()
 
     try {
-      const product = await getProductByBarcode(scannedBarcode)
+      const lookup = await getProductByBarcode(scannedBarcode)
 
-      if (!product) {
+      if (!lookup) {
         setScanMessage(`No active product found for barcode ${scannedBarcode}.`)
+        return
+      }
+      if (lookup.status === 'sold') {
+        setScanMessage(`Barcode ${scannedBarcode} has already been sold.`)
+        return
+      }
+      const product = lookup.product
+
+      if (lookup.tracked_barcode && (cartBarcodes[product.id] ?? []).includes(lookup.tracked_barcode)) {
+        setScanMessage(`Barcode ${scannedBarcode} is already in this basket.`)
         return
       }
 
@@ -129,7 +186,11 @@ export default function PosPage() {
         return
       }
 
-      addProduct(product)
+      if (product.barcode_tracking_enabled && !lookup.tracked_barcode) {
+        setScanMessage(`${product.name} requires scanning an individually tracked unit barcode.`)
+        return
+      }
+      addProduct(product, lookup.tracked_barcode ?? undefined)
       setSearch('')
       setScanMessage(`${product.name} added to the basket.`)
     } catch {
@@ -139,6 +200,18 @@ export default function PosPage() {
 
   function changeQuantity(product: Product, change: number) {
     setReceipt(null)
+    if (change < 0 && product.barcode_tracking_enabled) {
+      const nextQuantity = (cart[product.id] ?? 0) + change
+      setCartBarcodes((barcodes) => {
+        const nextBarcodes = { ...barcodes }
+        if (nextQuantity <= 0) {
+          delete nextBarcodes[product.id]
+        } else {
+          nextBarcodes[product.id] = (barcodes[product.id] ?? []).slice(0, nextQuantity)
+        }
+        return nextBarcodes
+      })
+    }
     setCart((current) => {
       const nextQuantity = (current[product.id] ?? 0) + change
       if (nextQuantity <= 0) {
@@ -154,7 +227,13 @@ export default function PosPage() {
   function checkout() {
     checkoutMutation.mutate({
       payment_method: paymentMethod,
-      items: cartLines.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
+      customer_id: selectedCustomer?.id,
+      discount_percent: discountRate,
+      items: cartLines.map(({ product, quantity }) => ({
+        product_id: product.id,
+        quantity,
+        ...(product.barcode_tracking_enabled ? { barcodes: cartBarcodes[product.id] ?? [] } : {}),
+      })),
     })
   }
 
@@ -205,10 +284,10 @@ export default function PosPage() {
           ) : (
             <div className="pos-product-grid">
               {visibleProducts.map((product) => (
-                <button key={product.id} type="button" disabled={product.quantity_on_hand === 0} onClick={() => addProduct(product)} className="pos-product-card">
+                <button key={product.id} type="button" disabled={product.quantity_on_hand === 0 || product.barcode_tracking_enabled} onClick={() => addProduct(product)} className="pos-product-card" title={product.barcode_tracking_enabled ? 'Scan an individual unit barcode to add this product' : undefined}>
                   <span className="pos-product-mark"><Store size={18} /></span>
                   <span className="pos-product-copy"><strong>{product.name}</strong><small>{product.category || product.sku}</small></span>
-                  <span className="pos-product-bottom"><strong>{formatKes(toCents(product.unit_price))}</strong><small className={product.quantity_on_hand <= product.reorder_level ? 'low-stock' : ''}>{product.quantity_on_hand} in stock</small></span>
+                  <span className="pos-product-bottom"><strong>{formatCurrency(Number(product.unit_price), currency)}</strong><small className={product.quantity_on_hand <= product.reorder_level ? 'low-stock' : ''}>{product.quantity_on_hand} in stock</small></span>
                   <span className="pos-add-mark"><Plus size={16} /></span>
                 </button>
               ))}
@@ -219,19 +298,19 @@ export default function PosPage() {
         <aside className="pos-checkout">
           <div className="pos-cart-heading">
             <div><p className="pos-kicker">CURRENT ORDER</p><h2>Basket <span>{itemCount}</span></h2></div>
-            {cartLines.length > 0 && <button className="pos-clear-button" type="button" onClick={() => { setCart({}); setReceipt(null) }}>Clear all</button>}
+            {cartLines.length > 0 && <button className="pos-clear-button" type="button" onClick={() => { setCart({}); setCartBarcodes({}); setReceipt(null) }}>Clear all</button>}
           </div>
 
           <div className="pos-cart-lines">
             {cartLines.map(({ product, quantity }) => (
               <div key={product.id} className="pos-cart-line">
-                <div className="pos-line-info"><strong>{product.name}</strong><small>{formatKes(toCents(product.unit_price))} each</small></div>
+                <div className="pos-line-info"><strong>{product.name}</strong><small>{formatCurrency(Number(product.unit_price), currency)} each</small></div>
                 <div className="pos-quantity-control">
                   <button type="button" title="Decrease quantity" aria-label={`Decrease ${product.name}`} onClick={() => changeQuantity(product, -1)}><Minus size={13} /></button>
                   <span>{quantity}</span>
-                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={quantity >= product.quantity_on_hand} onClick={() => changeQuantity(product, 1)}><Plus size={13} /></button>
+                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={product.barcode_tracking_enabled || quantity >= product.quantity_on_hand} onClick={() => changeQuantity(product, 1)}><Plus size={13} /></button>
                 </div>
-                <strong className="pos-line-total">{formatKes(toCents(product.unit_price) * quantity)}</strong>
+                <strong className="pos-line-total">{formatCurrency(Number(product.unit_price) * quantity, currency)}</strong>
                 <button className="pos-remove-line" type="button" title="Remove item" aria-label={`Remove ${product.name}`} onClick={() => changeQuantity(product, -quantity)}><Trash2 size={15} /></button>
               </div>
             ))}
@@ -239,27 +318,55 @@ export default function PosPage() {
           </div>
 
           <div className="pos-payment-area">
-            <div className="pos-total-row"><span>Subtotal <small>({itemCount} items)</small></span><strong>{formatKes(subtotalCents)}</strong></div>
-            <div className="pos-total-row pos-grand-total"><span>Total due</span><strong>{formatKes(subtotalCents)}</strong></div>
+            <div className="pos-customer-picker">
+              <label htmlFor="pos-customer-search">Customer <small>(optional)</small></label>
+              {selectedCustomer ? (
+                <div className="pos-selected-customer">
+                  <span><strong>{selectedCustomer.name}</strong>{selectedCustomer.phone && <small>{selectedCustomer.phone}</small>}</span>
+                  <button type="button" onClick={() => { setSelectedCustomer(null); setCustomerSearch('') }} aria-label="Remove selected customer"><X size={15} /></button>
+                </div>
+              ) : (
+                <>
+                  <input id="pos-customer-search" value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Search by name or phone" />
+                  {customerSearch.trim().length >= 2 && (
+                    <div className="pos-customer-results">
+                      {customerQuery.isPending && <span>Searching customers...</span>}
+                      {customerQuery.isError && <span role="alert">Customers could not be searched.</span>}
+                      {(customerQuery.data ?? []).filter((customer) => customer.status === 'active').map((customer) => (
+                        <button key={customer.id} type="button" onClick={() => { setSelectedCustomer({ id: customer.id, name: customer.name, phone: customer.phone }); setCustomerSearch('') }}>
+                          <strong>{customer.name}</strong><small>{customer.phone ?? customer.email ?? 'No contact details'}</small>
+                        </button>
+                      ))}
+                      {!customerQuery.isPending && !customerQuery.isError && !customerQuery.data?.some((customer) => customer.status === 'active') && <span>No matching active customers found.</span>}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            {preferences?.discount_enabled && (
+              <label className="pos-discount-control">Discount (%)
+                <input type="number" min="0" max={preferences.max_discount_percent} step="0.01" value={discountPercent} onChange={(event) => setDiscountPercent(event.target.value)} aria-label="Discount percentage" />
+                <small>Up to {preferences.max_discount_percent}%</small>
+              </label>
+            )}
+            <div className="pos-total-row"><span>Subtotal <small>({itemCount} items)</small></span><strong>{formatCurrency(subtotalCents / 100, currency)}</strong></div>
+            {discountCents > 0 && <div className="pos-total-row"><span>Discount ({discountRate}%)</span><strong>−{formatCurrency(discountCents / 100, currency)}</strong></div>}
+            {preferences?.tax_enabled && <div className="pos-total-row"><span>{preferences.tax_inclusive ? 'Tax included' : 'Tax'} ({preferences.tax_rate}%)</span><strong>{formatCurrency(discountedTaxCents / 100, currency)}</strong></div>}
+            <div className="pos-total-row pos-grand-total"><span>Total due</span><strong>{formatCurrency(discountedTotalCents / 100, currency)}</strong></div>
             <fieldset className="pos-tender-options">
               <legend>Payment method</legend>
-              {[
-                { value: 'cash', label: 'Cash', icon: Banknote },
-                { value: 'mpesa', label: 'M-Pesa', icon: Smartphone },
-                { value: 'card', label: 'Card', icon: CreditCard },
-                { value: 'bank', label: 'Bank', icon: WalletCards },
-                { value: 'credit', label: 'Credit', icon: Clock3 },
-              ].map(({ value, label, icon: Icon }) => (
-                <button key={value} className={paymentMethod === value ? 'selected' : ''} type="button" aria-pressed={paymentMethod === value} onClick={() => setPaymentMethod(value as typeof paymentMethod)}>
+              {paymentOptions.filter(({ value }) => enabledPaymentMethods.includes(value)).map(({ value, label, icon: Icon }) => (
+                <button key={value} className={paymentMethod === value ? 'selected' : ''} type="button" aria-pressed={paymentMethod === value} onClick={() => setSelectedPaymentMethod(value)}>
                   <Icon size={16} /><span>{label}</span>{paymentMethod === value && <Check size={13} />}
                 </button>
               ))}
             </fieldset>
-            {checkoutMutation.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Sale failed. Stock may have changed; try again.</div>}
+            {settingsQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Checkout settings could not be loaded. Refresh before taking payment.</div>}
+            {checkoutMutation.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Sale failed. Check stock, register status, and enabled payment methods, then try again.</div>}
             {registerQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Register status could not be checked.</div>}
-            <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen} onClick={checkout}>
+            <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen || settingsQuery.isPending || settingsQuery.isError || !enabledPaymentMethods.includes(paymentMethod)} onClick={checkout}>
               <span>{checkoutMutation.isPending ? 'Processing sale...' : paymentMethod === 'credit' ? 'Record credit sale' : 'Charge customer'}</span>
-              <span>{checkoutMutation.isPending ? null : <>{formatKes(subtotalCents)} <ChevronRight size={17} /></>}</span>
+              <span>{checkoutMutation.isPending ? null : <>{formatCurrency(discountedTotalCents / 100, currency)} <ChevronRight size={17} /></>}</span>
             </button>
             {!registerOpen && !registerQuery.isPending && <p className="pos-gate-note">Open the register below before completing a sale.</p>}
           </div>
@@ -276,14 +383,20 @@ export default function PosPage() {
 
             <div className="printable-receipt" aria-label="Printable sales receipt">
               <header className="receipt-header">
-                <p className="receipt-brand">POSS POS</p>
+                <p className="receipt-brand">{businessSettings?.name ?? 'POSS POS'}</p>
                 <h3>Retail Receipt</h3>
-                <p>{new Date(receipt.created_at).toLocaleString()}</p>
+                <p>{new Date(receipt.created_at).toLocaleString('en-KE', { timeZone: businessSettings?.timezone ?? 'Africa/Nairobi' })}</p>
               </header>
+              {preferences?.receipt_show_business_details && (
+                <div className="receipt-business-details">
+                  {[preferences.business_address, preferences.business_phone, preferences.business_email, preferences.tax_number && `Tax ID: ${preferences.tax_number}`].filter(Boolean).map((detail, index) => <p key={index}>{detail}</p>)}
+                </div>
+              )}
 
               <div className="receipt-meta">
                 <div><span>Receipt</span><strong>{receipt.receipt_number}</strong></div>
                 <div><span>Payment</span><strong>{receipt.payment_method.toUpperCase()}</strong></div>
+                {receipt.customer && <div><span>Customer</span><strong>{receipt.customer.name}</strong></div>}
               </div>
 
               <div className="receipt-items">
@@ -291,21 +404,22 @@ export default function PosPage() {
                   <div key={`${receipt.id}-${item.product_id}-${item.sku}`} className="receipt-item">
                     <div className="receipt-item-main">
                       <strong>{item.product_name}</strong>
-                      <small>{item.quantity} × {formatKes(toCents(item.unit_price))}</small>
+                      <small>{item.quantity} × {formatCurrency(Number(item.unit_price), currency)}</small>
                     </div>
-                    <span>{formatKes(toCents(item.line_total))}</span>
+                    <span>{formatCurrency(Number(item.line_total), currency)}</span>
                   </div>
                 ))}
               </div>
 
               <div className="receipt-summary">
-                <div><span>Subtotal</span><strong>{formatKes(toCents(receipt.subtotal))}</strong></div>
-                <div><span>Total</span><strong>{formatKes(toCents(receipt.total))}</strong></div>
+                <div><span>Subtotal</span><strong>{formatCurrency(Number(receipt.subtotal), currency)}</strong></div>
+                {Number(receipt.discount_amount) > 0 && <div><span>Discount</span><strong>−{formatCurrency(Number(receipt.discount_amount), currency)}</strong></div>}
+                {Number(receipt.tax_amount) > 0 && <div><span>{preferences?.tax_inclusive ? 'Tax included' : 'Tax'} ({receipt.tax_rate}%)</span><strong>{formatCurrency(Number(receipt.tax_amount), currency)}</strong></div>}
+                <div><span>Total</span><strong>{formatCurrency(Number(receipt.total), currency)}</strong></div>
               </div>
 
               <footer className="receipt-footer">
-                <p>Thank you for shopping with POSS.</p>
-                <p>Support: help@poss.co.ke</p>
+                <p>{preferences?.receipt_footer}</p>
               </footer>
             </div>
           </div>}
@@ -321,7 +435,7 @@ export default function PosPage() {
                   {cartLines.length > 0 && <small>Complete or clear the basket before closing.</small>}
                 </form>
               ) : (
-                <div className="pos-register-active"><span>Float {formatKes(toCents(registerQuery.data?.current_session?.opening_balance ?? '0'))}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
+                <div className="pos-register-active"><span>Float {formatCurrency(Number(registerQuery.data?.current_session?.opening_balance ?? '0'), currency)}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
               )
             ) : (
               <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0) }) }}>
@@ -344,8 +458,4 @@ function ShoppingBasketIcon() {
 function toCents(amount: string): number {
   const [units, fraction = ''] = amount.split('.')
   return Number(units) * 100 + Number(fraction.padEnd(2, '0').slice(0, 2))
-}
-
-function formatKes(amountInCents: number): string {
-  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES' }).format(amountInCents / 100)
 }

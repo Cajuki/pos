@@ -177,6 +177,7 @@ npm run build
 - Use managed secrets in production.
 - Do not expose private keys or payment credentials in browser code.
 - Keep backend authorization and inventory rules authoritative.
+- Business owners and admins can configure the business profile, currency, time zone, sales tax, accepted payment methods, and printed receipt details in Settings. Checkout enforces enabled tenders and calculates tax on the server.
 - Enforce business membership checks on every tenant-specific endpoint.
 - The frontend is for UX and workflow orchestration only, never the final authority for price, tax, stock, or payment status.
 
@@ -217,4 +218,3 @@ The system supports the foundational acceptance flow:
 5. Verify API connectivity and business membership enforcement
 
 This is the foundation from which the full transactional POS system can be expanded responsibly and securely.
-

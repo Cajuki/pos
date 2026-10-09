@@ -38,6 +38,7 @@ CREATE TABLE businesses (
     currency VARCHAR(3) NOT NULL DEFAULT 'KES',
     timezone VARCHAR(255) NOT NULL DEFAULT 'Africa/Nairobi',
     status VARCHAR(255) NOT NULL DEFAULT 'active',
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMP(0) WITHOUT TIME ZONE,
     updated_at TIMESTAMP(0) WITHOUT TIME ZONE
 );
@@ -161,6 +162,7 @@ CREATE TABLE products (
     unit_id BIGINT REFERENCES units(id) ON DELETE SET NULL,
     sku VARCHAR(64) NOT NULL,
     barcode VARCHAR(100),
+    barcode_tracking_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     name VARCHAR(255) NOT NULL,
     category VARCHAR(255),
     description TEXT,
@@ -189,10 +191,14 @@ CREATE TABLE sales (
     id BIGSERIAL PRIMARY KEY,
     business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL,
     receipt_number VARCHAR(40) NOT NULL,
     payment_method VARCHAR(32) NOT NULL,
     status VARCHAR(24) NOT NULL DEFAULT 'paid',
     subtotal NUMERIC(12, 2) NOT NULL,
+    discount_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    tax_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    tax_rate NUMERIC(5, 2) NOT NULL DEFAULT 0,
     total NUMERIC(12, 2) NOT NULL,
     created_at TIMESTAMP(0) WITHOUT TIME ZONE,
     updated_at TIMESTAMP(0) WITHOUT TIME ZONE,
@@ -214,6 +220,19 @@ CREATE TABLE sale_items (
     updated_at TIMESTAMP(0) WITHOUT TIME ZONE
 );
 CREATE INDEX sale_items_sale_id_index ON sale_items (sale_id);
+
+CREATE TABLE product_barcodes (
+    id BIGSERIAL PRIMARY KEY,
+    business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+    product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    sale_item_id BIGINT REFERENCES sale_items(id) ON DELETE SET NULL,
+    barcode VARCHAR(100) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'in_stock',
+    created_at TIMESTAMP(0) WITHOUT TIME ZONE,
+    updated_at TIMESTAMP(0) WITHOUT TIME ZONE,
+    UNIQUE (business_id, barcode)
+);
+CREATE INDEX product_barcodes_business_id_product_id_status_index ON product_barcodes (business_id, product_id, status);
 
 CREATE TABLE stock_movements (
     id BIGSERIAL PRIMARY KEY,

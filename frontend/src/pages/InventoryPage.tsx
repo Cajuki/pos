@@ -1,15 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
-import { adjustStock, getInventory, getStockMovements } from '../api/commerce'
+import { adjustStock, getBusinessSettings, getInventory, getStockMovements, receiveBarcodeStock } from '../api/commerce'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { DataTable } from '../components/ui/DataTable'
+import { formatCurrency } from '../lib/utils'
 
 export default function InventoryPage() {
   const queryClient = useQueryClient()
   const [isAdjustmentOpen, setIsAdjustmentOpen] = useState(false)
+  const [barcodeInput, setBarcodeInput] = useState('')
+  const [barcodeProductId, setBarcodeProductId] = useState('')
+  const [receivedCount, setReceivedCount] = useState(0)
   const inventoryQuery = useQuery({ queryKey: ['inventory'], queryFn: getInventory })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const movementsQuery = useQuery({ queryKey: ['stock-movements'], queryFn: getStockMovements })
+  const currency = settingsQuery.data?.currency ?? 'KES'
   const adjustmentMutation = useMutation({
     mutationFn: adjustStock,
     onSuccess: async () => {
@@ -21,6 +27,19 @@ export default function InventoryPage() {
       setIsAdjustmentOpen(false)
     },
   })
+  const barcodeMutation = useMutation({
+    mutationFn: receiveBarcodeStock,
+    onSuccess: async () => {
+      setBarcodeInput('')
+      setReceivedCount((count) => count + 1)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['inventory'] }),
+        queryClient.invalidateQueries({ queryKey: ['stock-movements'] }),
+        queryClient.invalidateQueries({ queryKey: ['products'] }),
+        queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
+      ])
+    },
+  })
 
   function submitAdjustment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -30,6 +49,12 @@ export default function InventoryPage() {
       quantity_change: Number(formData.get('quantity_change')),
       reason: String(formData.get('reason')),
     })
+  }
+
+  function submitBarcodeReceipt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!barcodeProductId || !barcodeInput.trim()) return
+    barcodeMutation.mutate({ product_id: Number(barcodeProductId), barcode: barcodeInput.trim() })
   }
 
   const rows = (inventoryQuery.data ?? []).map((item) => ({
@@ -53,6 +78,30 @@ export default function InventoryPage() {
           {isAdjustmentOpen ? 'Close form' : 'Adjust stock'}
         </Button>
       </div>
+
+      <Card className="mb-5 p-5">
+        <div className="mb-4">
+          <h2 className="text-xl font-bold text-graphite">Receive individually barcoded stock</h2>
+          <p className="mt-1 text-sm text-graphite/65">Select one product, then scan each unit barcode. Every successful scan adds one unit to that product's stock.</p>
+        </div>
+        <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitBarcodeReceipt}>
+          <label className="grid gap-1 text-sm font-medium text-graphite">Product
+            <select required value={barcodeProductId} onChange={(event) => { setBarcodeProductId(event.target.value); setReceivedCount(0); barcodeMutation.reset() }} className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5">
+              <option value="">Choose a product</option>
+              {(inventoryQuery.data ?? []).map((item) => <option key={item.product_id} value={item.product_id}>{item.name} ({item.quantity_on_hand} on hand{item.barcode_tracking_enabled ? ', tracked' : ''})</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-sm font-medium text-graphite">Unit barcode
+            <input required autoComplete="off" value={barcodeInput} onChange={(event) => { setBarcodeInput(event.target.value); barcodeMutation.reset() }} className="rounded-xl border border-graphite/10 px-3 py-2.5" placeholder="Scan a unique barcode and press Enter" />
+          </label>
+          <div className="flex items-end gap-3">
+            <Button type="submit" disabled={!barcodeProductId || !barcodeInput.trim() || barcodeMutation.isPending}>{barcodeMutation.isPending ? 'Recording...' : 'Receive scanned unit'}</Button>
+            {receivedCount > 0 && <span className="pb-2 text-sm text-graphite/65">{receivedCount} scanned this session</span>}
+          </div>
+          {barcodeMutation.isError && <p role="alert" className="text-sm text-danger sm:col-span-2 xl:col-span-3">Barcode could not be received. It may already exist, or the product's existing stock must be adjusted to zero before tracking starts.</p>}
+          {barcodeMutation.isSuccess && <p role="status" className="text-sm text-emerald-700 sm:col-span-2 xl:col-span-3">Unit received. Scan the next barcode.</p>}
+        </form>
+      </Card>
 
       {isAdjustmentOpen && (
         <Card className="mb-5 p-5">
@@ -86,7 +135,7 @@ export default function InventoryPage() {
           columns={[
             { header: 'Product', accessor: 'name' },
             { header: 'SKU', accessor: 'sku' },
-            { header: 'Selling price', accessor: 'unit_price', render: (item) => `KES ${item.unit_price}` },
+            { header: 'Selling price', accessor: 'unit_price', render: (item) => formatCurrency(Number(item.unit_price), currency) },
             { header: 'On hand', accessor: 'quantity_on_hand' },
             { header: 'Reorder level', accessor: 'reorder_level' },
             { header: 'Status', accessor: 'status' },
