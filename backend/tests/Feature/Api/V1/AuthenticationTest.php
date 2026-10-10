@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Api\V1;
 
+use App\Mail\TeamInvitationMail;
 use App\Models\Business;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class AuthenticationTest extends TestCase
@@ -85,6 +87,7 @@ class AuthenticationTest extends TestCase
 
     public function test_business_owner_can_create_and_list_staff_members(): void
     {
+        Mail::fake();
         $owner = User::factory()->create();
         $business = Business::create(['name' => 'Staff Store']);
         $owner->businesses()->attach($business, ['role' => 'owner']);
@@ -93,14 +96,59 @@ class AuthenticationTest extends TestCase
         $this->postJson('/api/v1/business/staff', [
             'name' => 'Sam Cashier',
             'email' => 'sam@example.test',
-            'password' => 'Strong-pass-2026!',
             'role' => 'cashier',
-        ])->assertCreated()->assertJsonPath('data.role', 'cashier');
+        ])->assertStatus(202)
+            ->assertJsonPath('data.role', 'cashier')
+            ->assertJsonPath('data.status', 'invited');
 
+        Mail::assertSent(TeamInvitationMail::class, fn (TeamInvitationMail $mail): bool => $mail->hasTo('sam@example.test')
+            && str_contains($mail->invitationUrl, '/accept-invite?token='));
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseHas('team_invitations', ['email' => 'sam@example.test', 'role' => 'cashier']);
         $this->getJson('/api/v1/business/staff')
             ->assertOk()
             ->assertJsonCount(2, 'data')
-            ->assertJsonPath('data.1.email', 'sam@example.test');
+            ->assertJsonPath('data.1.email', 'sam@example.test')
+            ->assertJsonPath('data.1.status', 'invited');
+    }
+
+    public function test_invited_team_member_can_accept_and_create_their_own_password(): void
+    {
+        Mail::fake();
+        $owner = User::factory()->create();
+        $business = Business::create(['name' => 'Staff Store']);
+        $owner->businesses()->attach($business, ['role' => 'owner']);
+        $this->actingAs($owner, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $this->postJson('/api/v1/business/staff', [
+            'name' => 'Sam Cashier',
+            'email' => 'sam@example.test',
+            'role' => 'cashier',
+        ])->assertStatus(202);
+
+        $mail = Mail::sent(TeamInvitationMail::class)->first();
+        parse_str((string) parse_url($mail->invitationUrl, PHP_URL_QUERY), $query);
+        $token = $query['token'];
+
+        $this->getJson('/api/v1/auth/team-invitations/'.$token)
+            ->assertOk()
+            ->assertJsonPath('data.business_name', 'Staff Store')
+            ->assertJsonPath('data.email', 'sam@example.test');
+
+        $this->postJson('/api/v1/auth/team-invitations/'.$token.'/accept', [
+            'password' => 'Strong-pass-2026!',
+            'password_confirmation' => 'Strong-pass-2026!',
+        ])->assertOk()
+            ->assertJsonPath('data.business.id', $business->id)
+            ->assertJsonPath('data.business.role', 'cashier')
+            ->assertJsonPath('data.user.email', 'sam@example.test');
+
+        $this->assertDatabaseHas('business_user', ['business_id' => $business->id, 'role' => 'cashier']);
+        $this->assertDatabaseMissing('team_invitations', ['email' => 'sam@example.test', 'accepted_at' => null]);
+        $this->postJson('/api/v1/auth/team-invitations/'.$token.'/accept', [
+            'password' => 'Strong-pass-2026!',
+            'password_confirmation' => 'Strong-pass-2026!',
+        ])->assertStatus(410);
     }
 
     public function test_non_admin_member_cannot_manage_staff(): void
@@ -113,7 +161,6 @@ class AuthenticationTest extends TestCase
         $this->postJson('/api/v1/business/staff', [
             'name' => 'Sam Cashier',
             'email' => 'sam@example.test',
-            'password' => 'Strong-pass-2026!',
             'role' => 'cashier',
         ])->assertForbidden();
 

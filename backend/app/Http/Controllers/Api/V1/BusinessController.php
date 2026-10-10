@@ -3,11 +3,15 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Mail\TeamInvitationMail;
 use App\Models\Business;
+use App\Models\TeamInvitation;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -45,9 +49,21 @@ class BusinessController extends Controller
             'name' => $user->name,
             'email' => $user->email,
             'role' => $user->pivot->role,
+            'status' => 'active',
         ]);
+        $invitations = $business->teamInvitations()
+            ->whereNull('accepted_at')
+            ->where('expires_at', '>', now())
+            ->get()
+            ->map(fn (TeamInvitation $invitation): array => [
+                'id' => 'invitation-'.$invitation->id,
+                'name' => $invitation->name,
+                'email' => $invitation->email,
+                'role' => $invitation->role,
+                'status' => 'invited',
+            ]);
 
-        return response()->json(['data' => $staff]);
+        return response()->json(['data' => $staff->concat($invitations)->values()]);
     }
 
     public function addStaff(Request $request): JsonResponse
@@ -57,29 +73,119 @@ class BusinessController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:12', 'regex:/[a-z]/', 'regex:/[A-Z]/', 'regex:/[0-9]/', 'regex:/[^A-Za-z0-9]/'],
             'role' => ['required', Rule::in(['admin', 'manager', 'cashier', 'inventory'])],
         ]);
 
-        $user = DB::transaction(function () use ($business, $validated): User {
-            $user = User::create([
-                'name' => $validated['name'],
-                'email' => $validated['email'],
-                'password' => $validated['password'],
-            ]);
-            $business->users()->attach($user, ['role' => $validated['role']]);
+        $email = strtolower(trim($validated['email']));
+        $plainTextToken = Str::random(64);
+        $expiresAt = now()->addDays(7);
 
-            return $user;
+        DB::transaction(function () use ($business, $email, $expiresAt, $plainTextToken, $request, $validated): void {
+            $invitation = $business->teamInvitations()
+                ->where('email', $email)
+                ->whereNull('accepted_at')
+                ->lockForUpdate()
+                ->first() ?? new TeamInvitation;
+            $invitation->fill([
+                'business_id' => $business->id,
+                'invited_by_user_id' => $request->user()->id,
+                'name' => $validated['name'],
+                'email' => $email,
+                'role' => $validated['role'],
+                'token_hash' => hash('sha256', $plainTextToken),
+                'expires_at' => $expiresAt,
+                'accepted_at' => null,
+            ]);
+            $invitation->save();
+
+            $invitationUrl = rtrim(config('app.frontend_url'), '/').'/accept-invite?token='.rawurlencode($plainTextToken);
+            Mail::to($email)->send(new TeamInvitationMail(
+                $validated['name'],
+                $business->name,
+                $validated['role'],
+                $invitationUrl,
+                $expiresAt->toDayDateTimeString(),
+            ));
         });
 
         return response()->json([
             'data' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
+                'name' => $validated['name'],
+                'email' => $email,
                 'role' => $validated['role'],
+                'status' => 'invited',
             ],
-        ], 201);
+        ], 202);
+    }
+
+    public function showInvitation(string $token): JsonResponse
+    {
+        $invitation = $this->findValidInvitation($token);
+
+        return response()->json(['data' => [
+            'name' => $invitation->name,
+            'email' => $invitation->email,
+            'role' => $invitation->role,
+            'business_name' => $invitation->business->name,
+            'expires_at' => $invitation->expires_at,
+        ]]);
+    }
+
+    public function acceptInvitation(Request $request, string $token): JsonResponse
+    {
+        $validated = $request->validate([
+            'password' => ['required', 'string', 'min:12', 'regex:/[a-z]/', 'regex:/[A-Z]/', 'regex:/[0-9]/', 'regex:/[^A-Za-z0-9]/', 'confirmed'],
+        ]);
+
+        $accepted = DB::transaction(function () use ($token, $validated): array {
+            $invitation = TeamInvitation::query()
+                ->where('token_hash', hash('sha256', $token))
+                ->lockForUpdate()
+                ->first();
+
+            if (! $invitation || $invitation->accepted_at || $invitation->expires_at->isPast()) {
+                abort(410, 'This invitation is invalid or has expired.');
+            }
+
+            if (User::query()->where('email', $invitation->email)->exists()) {
+                abort(409, 'An account already exists for this email address. Sign in before joining this team.');
+            }
+
+            $business = $invitation->business;
+            $user = User::create([
+                'name' => $invitation->name,
+                'email' => $invitation->email,
+                'password' => $validated['password'],
+            ]);
+            $user->forceFill(['email_verified_at' => now()])->save();
+            $user->businesses()->attach($business, ['role' => $invitation->role]);
+            $invitation->update(['accepted_at' => now()]);
+
+            return [
+                'token' => $user->createToken('pos-web')->plainTextToken,
+                'user' => $user,
+                'business' => [
+                    ...$business->only(['id', 'name', 'currency', 'timezone']),
+                    'role' => $invitation->role,
+                ],
+            ];
+        });
+
+        return response()->json(['data' => $accepted]);
+    }
+
+    private function findValidInvitation(string $token): TeamInvitation
+    {
+        $invitation = TeamInvitation::query()
+            ->with('business')
+            ->where('token_hash', hash('sha256', $token))
+            ->whereNull('accepted_at')
+            ->where('expires_at', '>', now())
+            ->first();
+
+        abort_unless($invitation, 410, 'This invitation is invalid or has expired.');
+
+        return $invitation;
     }
 
     public function settings(Request $request): JsonResponse

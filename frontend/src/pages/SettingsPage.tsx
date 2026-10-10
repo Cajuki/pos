@@ -108,16 +108,16 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
         </Button>
       </div>
 
-        <form id="business-settings-form" onSubmit={submitSettings} className="grid items-start gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
-          <Card className="p-2">
-            <nav aria-label="Settings sections" className="grid gap-1">
+        <form id="business-settings-form" onSubmit={submitSettings} className="grid min-w-0 items-start gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
+          <Card className="min-w-0 bg-graphite p-2">
+            <nav aria-label="Settings sections" className="grid grid-cols-2 gap-1 sm:grid-cols-4 xl:grid-cols-1">
               {tabs.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
                   type="button"
                   onClick={() => setActiveTab(id)}
                   aria-current={activeTab === id ? 'page' : undefined}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-medium transition-colors ${activeTab === id ? 'bg-graphite text-white' : 'text-graphite/70 hover:bg-graphite/5'}`}
+                  className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-3 text-left text-xs font-medium transition-colors sm:gap-3 sm:px-3 sm:text-sm ${activeTab === id ? 'bg-white/15 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'}`}
                 >
                   <Icon size={17} />{label}
                 </button>

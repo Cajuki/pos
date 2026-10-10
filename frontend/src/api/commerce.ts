@@ -70,6 +70,8 @@ export interface Sale {
   tax_amount: string
   tax_rate: string
   total: string
+  cash_received: string | null
+  change_given: string | null
   created_at: string
   items: SaleItem[]
 }
@@ -219,10 +221,11 @@ export interface ReportSummary {
 }
 
 export interface StaffMember {
-  id: number
+  id: number | string
   name: string
   email: string
   role: string
+  status: 'active' | 'invited'
 }
 
 interface PaginatedResponse<T> {
@@ -271,7 +274,6 @@ export async function getStaff(): Promise<StaffMember[]> {
 export async function createStaff(payload: {
   name: string
   email: string
-  password: string
   role: string
 }): Promise<StaffMember> {
   const response = await apiClient.post<{ data: StaffMember }>('/business/staff', payload)
@@ -322,6 +324,7 @@ export async function getSales(): Promise<Sale[]> {
 
 export async function createSale(payload: {
   payment_method: 'cash' | 'mpesa' | 'card' | 'bank' | 'credit'
+  cash_received?: string
   customer_id?: number
   discount_percent?: number
   items: Array<{ product_id: number; quantity: number; barcodes?: string[] }>

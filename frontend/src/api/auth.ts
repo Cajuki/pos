@@ -20,6 +20,20 @@ export interface AuthPayload {
   businesses: BusinessMembership[]
 }
 
+export interface TeamInvitation {
+  name: string
+  email: string
+  role: string
+  business_name: string
+  expires_at: string
+}
+
+export interface TeamInvitationAcceptance {
+  token: string
+  user: AuthUser
+  business: Pick<BusinessMembership, 'id' | 'name' | 'currency' | 'timezone'> & { role: string }
+}
+
 export function saveAuthSession(session: {
   token: string
   user: AuthUser
@@ -48,6 +62,22 @@ export interface LoginRequest {
 
 export async function login(credentials: LoginRequest): Promise<AuthPayload> {
   const response = await apiClient.post<{ data: AuthPayload }>('/auth/login', credentials)
+  return response.data.data
+}
+
+export async function getTeamInvitation(token: string): Promise<TeamInvitation> {
+  const response = await apiClient.get<{ data: TeamInvitation }>(`/auth/team-invitations/${encodeURIComponent(token)}`)
+  return response.data.data
+}
+
+export async function acceptTeamInvitation(token: string, payload: {
+  password: string
+  password_confirmation: string
+}): Promise<TeamInvitationAcceptance> {
+  const response = await apiClient.post<{ data: TeamInvitationAcceptance }>(
+    `/auth/team-invitations/${encodeURIComponent(token)}/accept`,
+    payload,
+  )
   return response.data.data
 }
 

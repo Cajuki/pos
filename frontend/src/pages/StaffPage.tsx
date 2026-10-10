@@ -8,12 +8,14 @@ import { Card } from '../components/ui/Card'
 export default function StaffPage() {
   const queryClient = useQueryClient()
   const [isFormOpen, setIsFormOpen] = useState(false)
+  const [invitedEmail, setInvitedEmail] = useState<string | null>(null)
   const staffQuery = useQuery({ queryKey: ['business-staff'], queryFn: getStaff })
   const createMutation = useMutation({
     mutationFn: createStaff,
-    onSuccess: async () => {
+    onSuccess: async (invitation) => {
       await queryClient.invalidateQueries({ queryKey: ['business-staff'] })
       setIsFormOpen(false)
+      setInvitedEmail(invitation.email)
     },
   })
 
@@ -24,7 +26,6 @@ export default function StaffPage() {
     createMutation.mutate({
       name: String(formData.get('name')),
       email: String(formData.get('email')),
-      password: String(formData.get('password')),
       role: String(formData.get('role')),
     })
   }
@@ -41,16 +42,17 @@ export default function StaffPage() {
         </Button>
       </div>
 
+      {invitedEmail && <p role="status" className="w-full rounded-xl border border-success/20 bg-success/5 px-4 py-3 text-sm text-success">Invitation sent to {invitedEmail}. They can create their password from the email link.</p>}
+
       {isFormOpen && (
         <Card className="mb-5 w-full p-5">
-          <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" onSubmit={submitStaff}>
+          <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitStaff}>
             <label className="grid gap-1 text-sm font-medium text-graphite">Full name<input required name="name" maxLength={120} autoComplete="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Email<input required name="email" type="email" maxLength={255} autoComplete="email" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Role<select name="role" defaultValue="cashier" className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5"><option value="admin">Admin</option><option value="manager">Manager</option><option value="cashier">Cashier</option><option value="inventory">Inventory</option></select></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Initial password<input required name="password" type="password" minLength={12} pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}" autoComplete="new-password" className="rounded-xl border border-graphite/10 px-3 py-2.5" /><small className="text-xs text-graphite/60">12+ characters with upper/lowercase, a number, and a symbol.</small></label>
-            <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-4">
-              <Button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Adding...' : 'Add team member'}</Button>
-              {createMutation.isError && <span role="alert" className="flex items-center gap-2 text-sm text-danger"><CircleAlert size={15} /> Could not add staff. Check the email and password requirements.</span>}
+            <div className="flex flex-wrap items-center gap-3 sm:col-span-2 xl:col-span-3">
+              <Button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Sending invitation...' : 'Send invitation'}</Button>
+              {createMutation.isError && <span role="alert" className="flex items-center gap-2 text-sm text-danger"><CircleAlert size={15} /> Could not send the invitation. Check the email and try again.</span>}
             </div>
           </form>
         </Card>
@@ -66,7 +68,7 @@ export default function StaffPage() {
         <div className="w-full overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-sm">
             <thead className="border-b border-graphite/10 text-xs uppercase text-graphite/55">
-              <tr><th className="px-3 py-3 font-medium">Name</th><th className="px-3 py-3 font-medium">Email</th><th className="px-3 py-3 font-medium">Role</th></tr>
+              <tr><th className="px-3 py-3 font-medium">Name</th><th className="px-3 py-3 font-medium">Email</th><th className="px-3 py-3 font-medium">Role</th><th className="px-3 py-3 font-medium">Status</th></tr>
             </thead>
             <tbody className="divide-y divide-graphite/10">
               {(staffQuery.data ?? []).map((member) => (
@@ -74,11 +76,12 @@ export default function StaffPage() {
                   <td className="px-3 py-3 font-medium text-graphite">{member.name}</td>
                   <td className="px-3 py-3 text-graphite/70">{member.email}</td>
                   <td className="px-3 py-3 capitalize text-graphite/70">{member.role}</td>
+                  <td className="px-3 py-3 capitalize text-graphite/70">{member.status}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!staffQuery.isPending && !staffQuery.isError && !staffQuery.data?.length && <p className="py-8 text-center text-sm text-graphite/60">No members found for this business.</p>}
+          {!staffQuery.isPending && !staffQuery.isError && !staffQuery.data?.length && <p className="py-8 text-center text-sm text-graphite/60">No members or pending invitations for this business.</p>}
         </div>
       </Card>
     </section>

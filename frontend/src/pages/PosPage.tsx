@@ -11,6 +11,7 @@ import {
   Minus,
   Plus,
   Printer,
+  RefreshCw,
   Search,
   Smartphone,
   Store,
@@ -56,6 +57,7 @@ export default function PosPage() {
   const [selectedProducts, setSelectedProducts] = useState<Record<number, Product>>({})
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<typeof paymentOptions[number]['value'] | null>(null)
   const [receipt, setReceipt] = useState<Sale | null>(null)
+  const [cashReceived, setCashReceived] = useState('')
   const [openingBalance, setOpeningBalance] = useState('')
   const [actualCash, setActualCash] = useState('')
   const [showCloseForm, setShowCloseForm] = useState(false)
@@ -78,6 +80,7 @@ export default function PosPage() {
       setReceipt(sale)
       setCart({})
       setCartBarcodes({})
+      setCashReceived('')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
         queryClient.invalidateQueries({ queryKey: ['products'] }),
@@ -126,6 +129,10 @@ export default function PosPage() {
       ? Math.round((subtotalCents - discountCents) * taxRate / (100 + taxRate))
       : Math.round((subtotalCents - discountCents) * taxRate / 100)
   const discountedTotalCents = (preferences?.tax_inclusive ? subtotalCents - discountCents : subtotalCents - discountCents + discountedTaxCents)
+  const cashReceivedIsValid = /^\d+(?:\.\d{0,2})?$/.test(cashReceived.trim())
+  const cashReceivedCents = cashReceived.trim() && cashReceivedIsValid
+    ? toCents(cashReceived.trim())
+    : discountedTotalCents
   const currency = businessSettings?.currency ?? 'KES'
   const enabledPaymentMethods = preferences?.payment_methods ?? []
   const defaultPaymentMethod = preferences?.default_payment_method
@@ -135,6 +142,9 @@ export default function PosPage() {
   const paymentMethod = selectedPaymentMethod && enabledPaymentMethods.includes(selectedPaymentMethod)
     ? selectedPaymentMethod
     : fallbackPaymentMethod
+  const changeGivenCents = Math.max(0, cashReceivedCents - discountedTotalCents)
+  const cashPaymentIsValid = paymentMethod !== 'cash'
+    || (!cashReceived.trim() || (cashReceivedIsValid && cashReceivedCents >= discountedTotalCents))
 
   function addProduct(product: Product, trackedBarcode?: string) {
     setReceipt(null)
@@ -227,6 +237,7 @@ export default function PosPage() {
   function checkout() {
     checkoutMutation.mutate({
       payment_method: paymentMethod,
+      ...(paymentMethod === 'cash' ? { cash_received: (cashReceivedCents / 100).toFixed(2) } : {}),
       customer_id: selectedCustomer?.id,
       discount_percent: discountRate,
       items: cartLines.map(({ product, quantity }) => ({
@@ -296,6 +307,35 @@ export default function PosPage() {
         </div>
 
         <aside className="pos-checkout">
+          <div className={`pos-register-card ${registerOpen ? 'is-register-open' : ''}`}>
+            <div className="pos-register-heading"><span className="pos-register-icon"><Clock3 size={17} /></span><div><strong>{registerOpen ? 'Active shift' : 'Start your shift'}</strong><small>{registerQuery.data?.register.name ?? 'Main counter'}</small></div>{registerOpen && <span className="pos-open-label">OPEN</span>}</div>
+            {registerQuery.isPending ? <p className="pos-register-message">Checking register status...</p> : registerQuery.isError ? (
+              <div className="pos-register-message pos-register-error">
+                <span>Register status could not be checked. Retry before taking payment.</span>
+                <button type="button" onClick={() => void registerQuery.refetch()} disabled={registerQuery.isFetching}>
+                  <RefreshCw size={13} /> {registerQuery.isFetching ? 'Checking...' : 'Retry'}
+                </button>
+              </div>
+            ) : registerOpen ? (
+              showCloseForm ? (
+                <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); closeRegisterMutation.mutate({ actual_cash: Number(actualCash) }) }}>
+                  <label>Counted cash<input type="number" min="0" step="0.01" required value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder="0.00" /></label>
+                  {closeRegisterMutation.isError && <p role="alert">Could not close this shift. Check the counted amount and retry.</p>}
+                  <div><button type="button" className="pos-cancel-button" onClick={() => setShowCloseForm(false)}>Cancel</button><button type="submit" disabled={closeRegisterMutation.isPending || cartLines.length > 0}>{closeRegisterMutation.isPending ? 'Closing...' : 'Close shift'}</button></div>
+                  {cartLines.length > 0 && <small>Complete or clear the basket before closing.</small>}
+                </form>
+              ) : (
+                <div className="pos-register-active"><span>Float {formatCurrency(Number(registerQuery.data?.current_session?.opening_balance ?? '0'), currency)}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
+              )
+            ) : (
+              <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0) }) }}>
+                <label>Opening float<input type="number" min="0" step="0.01" required value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} placeholder="0.00" /></label>
+                {openRegisterMutation.isError && <p role="alert">Could not open the register. Please retry.</p>}
+                <button type="submit" disabled={openRegisterMutation.isPending}>{openRegisterMutation.isPending ? 'Opening...' : 'Open register'} <ChevronRight size={14} /></button>
+              </form>
+            )}
+          </div>
+
           <div className="pos-cart-heading">
             <div><p className="pos-kicker">CURRENT ORDER</p><h2>Basket <span>{itemCount}</span></h2></div>
             {cartLines.length > 0 && <button className="pos-clear-button" type="button" onClick={() => { setCart({}); setCartBarcodes({}); setReceipt(null) }}>Clear all</button>}
@@ -353,6 +393,29 @@ export default function PosPage() {
             {discountCents > 0 && <div className="pos-total-row"><span>Discount ({discountRate}%)</span><strong>−{formatCurrency(discountCents / 100, currency)}</strong></div>}
             {preferences?.tax_enabled && <div className="pos-total-row"><span>{preferences.tax_inclusive ? 'Tax included' : 'Tax'} ({preferences.tax_rate}%)</span><strong>{formatCurrency(discountedTaxCents / 100, currency)}</strong></div>}
             <div className="pos-total-row pos-grand-total"><span>Total due</span><strong>{formatCurrency(discountedTotalCents / 100, currency)}</strong></div>
+            {paymentMethod === 'cash' && (
+              <div className="pos-cash-calculator">
+                <label htmlFor="pos-cash-received">Cash received</label>
+                <div className="pos-cash-input-row">
+                  <input
+                    id="pos-cash-received"
+                    type="number"
+                    min={discountedTotalCents / 100}
+                    step="0.01"
+                    inputMode="decimal"
+                    value={cashReceived}
+                    onChange={(event) => setCashReceived(event.target.value)}
+                    placeholder={(discountedTotalCents / 100).toFixed(2)}
+                    aria-describedby="pos-cash-change"
+                  />
+                  <button type="button" onClick={() => setCashReceived((discountedTotalCents / 100).toFixed(2))}>Exact amount</button>
+                </div>
+                <div id="pos-cash-change" className={`pos-cash-change ${cashPaymentIsValid ? '' : 'is-underpaid'}`} aria-live="polite">
+                  <span>{!cashReceivedIsValid && cashReceived.trim() ? 'Enter a valid amount' : cashPaymentIsValid ? 'Change due' : 'Amount still owed'}</span>
+                  {cashReceivedIsValid && <strong>{formatCurrency(cashPaymentIsValid ? changeGivenCents / 100 : (discountedTotalCents - cashReceivedCents) / 100, currency)}</strong>}
+                </div>
+              </div>
+            )}
             <fieldset className="pos-tender-options">
               <legend>Payment method</legend>
               {paymentOptions.filter(({ value }) => enabledPaymentMethods.includes(value)).map(({ value, label, icon: Icon }) => (
@@ -363,12 +426,11 @@ export default function PosPage() {
             </fieldset>
             {settingsQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Checkout settings could not be loaded. Refresh before taking payment.</div>}
             {checkoutMutation.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Sale failed. Check stock, register status, and enabled payment methods, then try again.</div>}
-            {registerQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Register status could not be checked.</div>}
-            <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen || settingsQuery.isPending || settingsQuery.isError || !enabledPaymentMethods.includes(paymentMethod)} onClick={checkout}>
+            <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen || settingsQuery.isPending || settingsQuery.isError || !enabledPaymentMethods.includes(paymentMethod) || !cashPaymentIsValid} onClick={checkout}>
               <span>{checkoutMutation.isPending ? 'Processing sale...' : paymentMethod === 'credit' ? 'Record credit sale' : 'Charge customer'}</span>
               <span>{checkoutMutation.isPending ? null : <>{formatCurrency(discountedTotalCents / 100, currency)} <ChevronRight size={17} /></>}</span>
             </button>
-            {!registerOpen && !registerQuery.isPending && <p className="pos-gate-note">Open the register below before completing a sale.</p>}
+            {!registerOpen && !registerQuery.isPending && !registerQuery.isError && <p className="pos-gate-note">Open the register above before completing a sale.</p>}
           </div>
 
           {receipt && <div className="pos-receipt pos-receipt-shell">
@@ -416,6 +478,12 @@ export default function PosPage() {
                 {Number(receipt.discount_amount) > 0 && <div><span>Discount</span><strong>−{formatCurrency(Number(receipt.discount_amount), currency)}</strong></div>}
                 {Number(receipt.tax_amount) > 0 && <div><span>{preferences?.tax_inclusive ? 'Tax included' : 'Tax'} ({receipt.tax_rate}%)</span><strong>{formatCurrency(Number(receipt.tax_amount), currency)}</strong></div>}
                 <div><span>Total</span><strong>{formatCurrency(Number(receipt.total), currency)}</strong></div>
+                {receipt.payment_method === 'cash' && receipt.cash_received !== null && receipt.change_given !== null && (
+                  <>
+                    <div><span>Cash received</span><strong>{formatCurrency(Number(receipt.cash_received), currency)}</strong></div>
+                    <div className="receipt-change"><span>Change given</span><strong>{formatCurrency(Number(receipt.change_given), currency)}</strong></div>
+                  </>
+                )}
               </div>
 
               <footer className="receipt-footer">
@@ -424,27 +492,6 @@ export default function PosPage() {
             </div>
           </div>}
 
-          <div className="pos-register-card">
-            <div className="pos-register-heading"><span className="pos-register-icon"><Clock3 size={17} /></span><div><strong>{registerOpen ? 'Active shift' : 'Start your shift'}</strong><small>{registerQuery.data?.register.name ?? 'Main counter'}</small></div>{registerOpen && <span className="pos-open-label">OPEN</span>}</div>
-            {registerQuery.isPending ? <p className="pos-register-message">Checking register status...</p> : registerQuery.isError ? <p className="pos-register-message">Register details are unavailable. Refresh to try again.</p> : registerOpen ? (
-              showCloseForm ? (
-                <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); closeRegisterMutation.mutate({ actual_cash: Number(actualCash) }) }}>
-                  <label>Counted cash<input type="number" min="0" step="0.01" required value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder="0.00" /></label>
-                  {closeRegisterMutation.isError && <p role="alert">Could not close this shift. Check the counted amount and retry.</p>}
-                  <div><button type="button" className="pos-cancel-button" onClick={() => setShowCloseForm(false)}>Cancel</button><button type="submit" disabled={closeRegisterMutation.isPending || cartLines.length > 0}>{closeRegisterMutation.isPending ? 'Closing...' : 'Close shift'}</button></div>
-                  {cartLines.length > 0 && <small>Complete or clear the basket before closing.</small>}
-                </form>
-              ) : (
-                <div className="pos-register-active"><span>Float {formatCurrency(Number(registerQuery.data?.current_session?.opening_balance ?? '0'), currency)}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
-              )
-            ) : (
-              <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0) }) }}>
-                <label>Opening float<input type="number" min="0" step="0.01" required value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} placeholder="0.00" /></label>
-                {openRegisterMutation.isError && <p role="alert">Could not open the register. Please retry.</p>}
-                <button type="submit" disabled={openRegisterMutation.isPending}>{openRegisterMutation.isPending ? 'Opening...' : 'Open register'} <ChevronRight size={14} /></button>
-              </form>
-            )}
-          </div>
         </aside>
       </div>
     </section>

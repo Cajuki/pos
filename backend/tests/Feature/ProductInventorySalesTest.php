@@ -105,12 +105,16 @@ class ProductInventorySalesTest extends TestCase
 
         $sale = $this->postJson('/api/v1/sales', [
             'payment_method' => 'cash',
+            'cash_received' => '30.00',
             'items' => [['product_id' => $product['id'], 'quantity' => 2]],
         ])->assertCreated()
             ->assertJsonPath('data.total', '24.00')
+            ->assertJsonPath('data.cash_received', '30.00')
+            ->assertJsonPath('data.change_given', '6.00')
             ->assertJsonPath('data.items.0.line_total', '24.00')
             ->json('data');
 
+        $this->assertDatabaseHas('sales', ['id' => $sale['id'], 'cash_received' => '30.00', 'change_given' => '6.00']);
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 8]);
         $this->assertDatabaseHas('stock_movements', ['sale_id' => $sale['id'], 'quantity_change' => -2]);
         $this->assertDatabaseHas('cash_register_sessions', [
@@ -223,6 +227,39 @@ class ProductInventorySalesTest extends TestCase
         ])->assertUnprocessable()->assertJsonValidationErrors('payment_method');
         $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '210.00']);
         $this->assertDatabaseCount('sales', 2);
+    }
+
+    public function test_cash_checkout_rejects_tender_below_total_and_calculates_exact_change(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'CHANGE-001',
+            'name' => 'Change test item',
+            'unit_price' => 25,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 2,
+            'reason' => 'Opening count',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+
+        $payload = [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ];
+
+        $this->postJson('/api/v1/sales', [...$payload, 'cash_received' => '24.99'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('cash_received');
+        $this->assertDatabaseCount('sales', 0);
+
+        $this->postJson('/api/v1/sales', [...$payload, 'cash_received' => '50.50'])
+            ->assertCreated()
+            ->assertJsonPath('data.total', '25.00')
+            ->assertJsonPath('data.cash_received', '50.50')
+            ->assertJsonPath('data.change_given', '25.50');
     }
 
     public function test_sale_can_be_linked_to_a_business_customer_and_apply_configured_discount(): void

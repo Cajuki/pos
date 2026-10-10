@@ -28,6 +28,7 @@ import { getCurrentBusiness, logout } from './api/auth'
 import { getApiHealth } from './api/client'
 import { getInventory, getReportSummary, getSales } from './api/commerce'
 import AuthLayout from './features/auth/AuthLayout'
+import AcceptInvitationPage from './features/auth/AcceptInvitationPage'
 import EmailVerificationPage from './features/auth/EmailVerificationPage'
 import ForgotPasswordPage from './features/auth/ForgotPasswordPage'
 import LoginPage from './features/auth/LoginPage'
@@ -409,12 +410,17 @@ function PublicApp() {
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('pos_token'))
+  const location = useLocation()
 
   useEffect(() => {
     const syncToken = () => setToken(localStorage.getItem('pos_token'))
     window.addEventListener('pos-auth-changed', syncToken)
     return () => window.removeEventListener('pos-auth-changed', syncToken)
   }, [])
+
+  if (location.pathname === '/accept-invite') {
+    return <AuthLayout><AcceptInvitationPage /></AuthLayout>
+  }
 
   if (!token) {
     return <PublicApp />

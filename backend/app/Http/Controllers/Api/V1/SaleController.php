@@ -38,6 +38,7 @@ class SaleController extends Controller
         $business = $request->attributes->get('business');
         $validated = $request->validate([
             'payment_method' => ['required', 'in:cash,credit,mpesa,card,bank'],
+            'cash_received' => ['sometimes', 'nullable', 'numeric', 'decimal:0,2', 'min:0', 'prohibited_unless:payment_method,cash'],
             'customer_id' => ['nullable', 'integer'],
             'discount_percent' => ['sometimes', 'numeric', 'min:0', 'max:100'],
             'items' => ['required', 'array', 'min:1', 'max:100'],
@@ -178,6 +179,22 @@ class SaleController extends Controller
                 throw ValidationException::withMessages(['items' => 'The sale total exceeds the supported amount.']);
             }
 
+            $cashReceivedCents = null;
+            $changeGivenCents = null;
+            if ($validated['payment_method'] === 'cash') {
+                $cashReceivedCents = isset($validated['cash_received'])
+                    ? $this->toCents((string) $validated['cash_received'])
+                    : $totalCents;
+
+                if ($cashReceivedCents < $totalCents) {
+                    throw ValidationException::withMessages([
+                        'cash_received' => 'Cash received must be at least the sale total.',
+                    ]);
+                }
+
+                $changeGivenCents = $cashReceivedCents - $totalCents;
+            }
+
             $receiptNumber = 'POS-'.now()->format('Ymd').'-'.strtoupper(bin2hex(random_bytes(4)));
             $sale = Sale::create([
                 'business_id' => $business->id,
@@ -191,6 +208,8 @@ class SaleController extends Controller
                 'tax_amount' => $this->fromCents($taxCents),
                 'tax_rate' => number_format($taxRateBasisPoints / 100, 2, '.', ''),
                 'total' => $this->fromCents($totalCents),
+                'cash_received' => $cashReceivedCents === null ? null : $this->fromCents($cashReceivedCents),
+                'change_given' => $changeGivenCents === null ? null : $this->fromCents($changeGivenCents),
             ]);
 
             foreach ($items as $index => $item) {
@@ -257,7 +276,7 @@ class SaleController extends Controller
     private function saleData(Sale $sale): array
     {
         return [
-            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'created_at']),
+            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given', 'created_at']),
             'customer' => $sale->customer?->only(['id', 'name', 'phone', 'email']),
             'items' => $sale->items->map(fn ($item): array => [
                 ...$item->only(['product_id', 'sku', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total']),
