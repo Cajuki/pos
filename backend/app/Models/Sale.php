@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['business_id', 'user_id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given'])]
+#[Fillable(['business_id', 'user_id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'order_type', 'table_name', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given'])]
 class Sale extends Model
 {
     protected function casts(): array
@@ -36,5 +36,10 @@ class Sale extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function refunds(): HasMany
+    {
+        return $this->hasMany(Refund::class);
     }
 }

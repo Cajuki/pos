@@ -4,13 +4,20 @@ import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
 import { Check, Eye, EyeOff, Loader2, UserRoundPlus, ArrowLeft } from 'lucide-react'
-import { registerBusiness, saveAuthSession } from '../../api/auth'
+import { getBusinessIndustries, registerBusiness, saveAuthSession } from '../../api/auth'
 import { Button } from '../../components/ui/Button'
 
 const registerSchema = z.object({
   business_name: z.string().min(2, 'Business name is required.'),
+  industry: z.string().min(1, 'Choose your business type.'),
+  currency: z.enum(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR']),
+  timezone: z.string().min(1, 'Choose your time zone.'),
+  business_phone: z.string().max(40).optional(),
+  business_email: z.union([z.literal(''), z.email()]).optional(),
+  business_address: z.string().max(255).optional(),
   name: z.string().min(2, 'Your name is required.'),
   email: z.string().email('Enter a valid work email.'),
   password: z.string()
@@ -68,11 +75,18 @@ export default function RegisterPage() {
   const navigate = useNavigate()
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmation, setShowConfirmation] = useState(false)
+  const industriesQuery = useQuery({ queryKey: ['business-industries'], queryFn: getBusinessIndustries })
 
   const form = useForm<RegisterFormValues>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
       business_name: '',
+      industry: 'general',
+      currency: 'KES',
+      timezone: 'Africa/Nairobi',
+      business_phone: '',
+      business_email: '',
+      business_address: '',
       name: '',
       email: '',
       password: '',
@@ -142,6 +156,41 @@ export default function RegisterPage() {
           {form.formState.errors.business_name && (
             <p className="mt-1 text-xs text-danger font-medium">{form.formState.errors.business_name.message}</p>
           )}
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
+            Business type
+            <select className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('industry')}>
+              {(industriesQuery.data ?? []).map((industry) => <option key={industry.key} value={industry.key}>{industry.label}</option>)}
+            </select>
+            {industriesQuery.isError && <span role="alert" className="text-xs font-medium normal-case text-danger">Business types could not be loaded. Refresh and try again.</span>}
+          </label>
+          <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
+            Currency
+            <select className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('currency')}>
+              {['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR'].map((currency) => <option key={currency}>{currency}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
+            Time zone
+            <select className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('timezone')}>
+              {['Africa/Nairobi', 'Africa/Kampala', 'Africa/Dar_es_Salaam', 'Africa/Kigali', 'Africa/Johannesburg', 'UTC', 'Europe/London', 'America/New_York'].map((zone) => <option key={zone}>{zone}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
+            Business phone
+            <input type="tel" maxLength={40} className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('business_phone')} />
+          </label>
+        </div>
+
+        <div className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
+          Business email and address
+          <input type="email" maxLength={255} placeholder="Business email" className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('business_email')} />
+          <textarea maxLength={255} rows={2} placeholder="Business address" className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('business_address')} />
         </div>
 
         <div>
@@ -249,7 +298,7 @@ export default function RegisterPage() {
           type="submit"
           variant="primary"
           size="lg"
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || industriesQuery.isPending || industriesQuery.isError}
           className="w-full mt-2"
         >
           {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -266,4 +315,3 @@ export default function RegisterPage() {
     </div>
   )
 }
-

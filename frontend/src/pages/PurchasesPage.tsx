@@ -11,6 +11,7 @@ interface DraftLine {
   product: Product
   quantity: number
   unit_cost: number
+  barcodes: string[]
 }
 
 export default function PurchasesPage() {
@@ -20,6 +21,8 @@ export default function PurchasesPage() {
   const [productId, setProductId] = useState('')
   const [quantity, setQuantity] = useState('1')
   const [unitCost, setUnitCost] = useState('')
+  const [unitBarcodes, setUnitBarcodes] = useState('')
+  const [lineError, setLineError] = useState('')
   const [lines, setLines] = useState<DraftLine[]>([])
   const purchasesQuery = useQuery({ queryKey: ['purchases'], queryFn: getPurchases })
   const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
@@ -40,7 +43,8 @@ export default function PurchasesPage() {
     },
   })
 
-  const selectedProduct = productsQuery.data?.find((product) => String(product.id) === productId)
+  const stockProducts = (productsQuery.data ?? []).filter((product) => product.product_type === 'goods')
+  const selectedProduct = stockProducts.find((product) => String(product.id) === productId)
   const resolvedUnitCost = unitCost || selectedProduct?.cost_price || selectedProduct?.unit_price || ''
   const orderTotal = lines.reduce((sum, line) => sum + line.quantity * line.unit_cost, 0)
   const currency = settingsQuery.data?.currency ?? 'KES'
@@ -49,12 +53,30 @@ export default function PurchasesPage() {
     if (!selectedProduct) return
     const parsedQuantity = Number(quantity)
     const parsedCost = Number(resolvedUnitCost)
-    if (!Number.isInteger(parsedQuantity) || parsedQuantity < 1 || !Number.isFinite(parsedCost) || parsedCost < 0) return
+    if (!Number.isInteger(parsedQuantity) || parsedQuantity < 1 || !Number.isFinite(parsedCost) || parsedCost < 0) {
+      setLineError('Enter a valid quantity and unit cost.')
+      return
+    }
+    const barcodes = unitBarcodes.split(/[\n,]+/).map((barcode) => barcode.trim()).filter(Boolean)
+    if (selectedProduct.barcode_tracking_enabled && barcodes.length !== parsedQuantity) {
+      setLineError(`Scan or enter one unique barcode for each of the ${parsedQuantity} units.`)
+      return
+    }
+    if (!selectedProduct.barcode_tracking_enabled && barcodes.length > 0) {
+      setLineError('This product uses a shared barcode; receive it by quantity without unit barcodes.')
+      return
+    }
+    if (new Set(barcodes).size !== barcodes.length) {
+      setLineError('Each individually tracked unit must have a different barcode.')
+      return
+    }
 
-    setLines((current) => [...current, { product: selectedProduct, quantity: parsedQuantity, unit_cost: parsedCost }])
+    setLines((current) => [...current, { product: selectedProduct, quantity: parsedQuantity, unit_cost: parsedCost, barcodes }])
     setProductId('')
     setQuantity('1')
     setUnitCost('')
+    setUnitBarcodes('')
+    setLineError('')
   }
 
   function submitPurchase(event: FormEvent<HTMLFormElement>) {
@@ -63,14 +85,19 @@ export default function PurchasesPage() {
     createMutation.mutate({
       supplier_id: supplierId ? Number(supplierId) : undefined,
       notes: String(formData.get('notes')) || undefined,
-      items: lines.map((line) => ({ product_id: line.product.id, quantity: line.quantity, unit_cost: line.unit_cost })),
+      items: lines.map((line) => ({
+        product_id: line.product.id,
+        quantity: line.quantity,
+        unit_cost: line.unit_cost,
+        ...(line.product.barcode_tracking_enabled ? { barcodes: line.barcodes } : {}),
+      })),
     })
   }
 
   const rows = (purchasesQuery.data ?? []).map((purchase) => ({
     ...purchase,
     supplier_name: purchase.supplier?.name ?? 'Direct purchase',
-    item_summary: purchase.items.map((item) => `${item.product_name} × ${item.quantity_received}`).join(', '),
+    item_summary: purchase.items.map((item) => `${item.product_name} × ${item.quantity_received}${item.product_barcodes?.length ? ` (${item.product_barcodes.length} unique codes)` : ''}`).join(', '),
     total_display: formatCurrency(Number(purchase.total), currency),
     ordered_date: new Date(purchase.ordered_at).toLocaleDateString(),
   }))
@@ -101,9 +128,9 @@ export default function PurchasesPage() {
 
           <div className="grid items-end gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_110px_150px_auto]">
             <label className="grid gap-1 text-sm font-medium text-graphite">Product
-              <select value={productId} onChange={(event) => { setProductId(event.target.value); setUnitCost('') }} className="rounded-lg border border-graphite/15 bg-white px-3 py-2.5">
+              <select value={productId} onChange={(event) => { setProductId(event.target.value); setUnitCost(''); setUnitBarcodes(''); setLineError('') }} className="rounded-lg border border-graphite/15 bg-white px-3 py-2.5">
                 <option value="">Select a product</option>
-                {(productsQuery.data ?? []).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}
+                {stockProducts.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}{product.barcode_tracking_enabled ? ' · unique unit barcodes' : ''}</option>)}
               </select>
             </label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Quantity<input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} className="rounded-lg border border-graphite/15 px-3 py-2.5" /></label>
@@ -111,10 +138,16 @@ export default function PurchasesPage() {
             <Button type="button" variant="secondary" disabled={!selectedProduct} onClick={addLine} icon={<Plus size={15} />}>Add line</Button>
           </div>
 
+          {selectedProduct?.barcode_tracking_enabled && <label className="grid gap-1 text-sm font-medium text-graphite">Unit barcodes (one unique code per line)
+            <textarea required value={unitBarcodes} onChange={(event) => { setUnitBarcodes(event.target.value); setLineError('') }} rows={3} className="rounded-lg border border-graphite/15 px-3 py-2.5" placeholder="Scan or paste one barcode per line" />
+            <span className="text-xs font-normal text-graphite/60">Barcode count must match the quantity. Each barcode can only be received once.</span>
+          </label>}
+          {lineError && <p role="alert" className="text-sm text-danger">{lineError}</p>}
+
           {lines.length > 0 && <div className="overflow-x-auto rounded-lg border border-graphite/10">
             <table className="w-full min-w-[500px] text-left text-sm">
-              <thead className="bg-champagne-light text-graphite"><tr><th className="px-3 py-2.5">Product</th><th className="px-3 py-2.5">Quantity</th><th className="px-3 py-2.5">Unit cost</th><th className="px-3 py-2.5">Line total</th><th className="px-3 py-2.5"><span className="sr-only">Remove</span></th></tr></thead>
-              <tbody>{lines.map((line, index) => <tr key={`${line.product.id}-${index}`} className="border-t border-graphite/10"><td className="px-3 py-2.5 font-medium">{line.product.name}</td><td className="px-3 py-2.5">{line.quantity}</td><td className="px-3 py-2.5">{formatCurrency(line.unit_cost, currency)}</td><td className="px-3 py-2.5">{formatCurrency(line.quantity * line.unit_cost, currency)}</td><td className="px-3 py-2.5"><button type="button" title="Remove line" aria-label={`Remove ${line.product.name}`} onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="grid h-8 w-8 place-items-center text-danger"><Trash2 size={15} /></button></td></tr>)}</tbody>
+              <thead className="bg-champagne-light text-graphite"><tr><th className="px-3 py-2.5">Product</th><th className="px-3 py-2.5">Quantity</th><th className="px-3 py-2.5">Unit barcodes</th><th className="px-3 py-2.5">Unit cost</th><th className="px-3 py-2.5">Line total</th><th className="px-3 py-2.5"><span className="sr-only">Remove</span></th></tr></thead>
+              <tbody>{lines.map((line, index) => <tr key={`${line.product.id}-${index}`} className="border-t border-graphite/10"><td className="px-3 py-2.5 font-medium">{line.product.name}</td><td className="px-3 py-2.5">{line.quantity}</td><td className="px-3 py-2.5">{line.barcodes.length ? `${line.barcodes.length} unique` : 'Shared barcode / quantity'}</td><td className="px-3 py-2.5">{formatCurrency(line.unit_cost, currency)}</td><td className="px-3 py-2.5">{formatCurrency(line.quantity * line.unit_cost, currency)}</td><td className="px-3 py-2.5"><button type="button" title="Remove line" aria-label={`Remove ${line.product.name}`} onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} className="grid h-8 w-8 place-items-center text-danger"><Trash2 size={15} /></button></td></tr>)}</tbody>
             </table>
           </div>}
 

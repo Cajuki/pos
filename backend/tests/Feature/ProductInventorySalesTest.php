@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\Business;
+use App\Models\Product;
+use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -49,6 +51,34 @@ class ProductInventorySalesTest extends TestCase
         ]);
     }
 
+    public function test_product_creation_enforces_the_active_subscription_limit(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $business->subscriptions()->create([
+            'subscription_plan_id' => SubscriptionPlan::query()->where('code', 'starter')->value('id'),
+            'status' => 'active',
+            'starts_at' => now(),
+        ]);
+        $business->activeSubscription()->firstOrFail()->plan->update([
+            'limits' => ['users' => 5, 'products' => 1, 'locations' => 1],
+        ]);
+
+        $this->postJson('/api/v1/products', [
+            'sku' => 'LIMIT-001',
+            'name' => 'First product',
+            'unit_price' => 10,
+        ])->assertCreated();
+
+        $this->postJson('/api/v1/products', [
+            'sku' => 'LIMIT-002',
+            'name' => 'Over-limit product',
+            'unit_price' => 10,
+        ])->assertUnprocessable()->assertJsonValidationErrors('products');
+
+        $this->assertDatabaseCount('products', 1);
+    }
+
     public function test_product_requires_integer_price_and_character_based_sku(): void
     {
         [$user, $business] = $this->createBusinessContext();
@@ -93,6 +123,11 @@ class ProductInventorySalesTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.barcode', '0123456789012');
+        $this->getJson('/api/v1/products/barcode/0123456789012')
+            ->assertOk()
+            ->assertJsonPath('data.product.id', $product['id'])
+            ->assertJsonPath('data.tracked_barcode', null)
+            ->assertJsonPath('data.status', 'product');
 
         $this->postJson('/api/v1/inventory/adjustments', [
             'product_id' => $product['id'],
@@ -112,8 +147,15 @@ class ProductInventorySalesTest extends TestCase
             ->assertJsonPath('data.cash_received', '30.00')
             ->assertJsonPath('data.change_given', '6.00')
             ->assertJsonPath('data.items.0.line_total', '24.00')
+            ->assertJsonPath('data.items.0.barcode', '0123456789012')
             ->json('data');
 
+        $this->assertDatabaseHas('sale_items', [
+            'sale_id' => $sale['id'],
+            'product_id' => $product['id'],
+            'barcode' => '0123456789012',
+            'quantity' => 2,
+        ]);
         $this->assertDatabaseHas('sales', ['id' => $sale['id'], 'cash_received' => '30.00', 'change_given' => '6.00']);
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 8]);
         $this->assertDatabaseHas('stock_movements', ['sale_id' => $sale['id'], 'quantity_change' => -2]);
@@ -262,6 +304,75 @@ class ProductInventorySalesTest extends TestCase
             ->assertJsonPath('data.change_given', '25.50');
     }
 
+    public function test_cash_refund_restores_stock_and_reconciles_the_open_register(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'RETURN-001',
+            'name' => 'Returnable item',
+            'unit_price' => 50,
+            'quantity_on_hand' => 3,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 2]],
+        ])->assertCreated()->json('data');
+
+        $cashier = User::factory()->create();
+        $cashier->businesses()->attach($business, ['role' => 'cashier']);
+        $this->actingAs($cashier, 'sanctum')->withHeader('X-Business-ID', $business->id)
+            ->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+                'reason' => 'Customer returned one unopened item',
+                'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 1]],
+            ])->assertForbidden();
+
+        $this->useBusinessContext($user, $business);
+        $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Customer returned one unopened item',
+            'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 3]],
+        ])->assertUnprocessable()->assertJsonValidationErrors("items.{$sale['items'][0]['id']}.quantity");
+
+        $refund = $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Customer returned one unopened item',
+            'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 1]],
+        ])->assertCreated()
+            ->assertJsonPath('data.status', 'completed')
+            ->assertJsonPath('data.amount', '50.00')
+            ->json('data');
+
+        $this->assertDatabaseHas('inventory_stocks', [
+            'business_id' => $business->id,
+            'product_id' => $product['id'],
+            'quantity_on_hand' => 2,
+        ]);
+        $this->assertDatabaseHas('cash_register_sessions', ['expected_cash' => '50.00']);
+        $this->assertDatabaseHas('cash_movements', [
+            'business_id' => $business->id,
+            'type' => 'refund',
+            'amount' => '50.00',
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'business_id' => $business->id,
+            'action' => 'sale.refunded',
+            'entity_id' => (string) $sale['id'],
+        ]);
+        $this->assertDatabaseHas('refunds', ['id' => $refund['id'], 'sale_id' => $sale['id']]);
+
+        $this->getJson('/api/v1/sales')
+            ->assertOk()
+            ->assertJsonPath('data.0.items.0.refunded_quantity', 1);
+        $this->getJson("/api/v1/sales/{$sale['id']}")
+            ->assertOk()
+            ->assertJsonPath('data.items.0.refunded_quantity', 1);
+        $this->getJson('/api/v1/reports/summary?period=today')
+            ->assertOk()
+            ->assertJsonPath('data.today.revenue', 50)
+            ->assertJsonPath('data.period.revenue', 50)
+            ->assertJsonPath('data.sales_trend.0.total', 50);
+    }
+
     public function test_sale_can_be_linked_to_a_business_customer_and_apply_configured_discount(): void
     {
         [$user, $business] = $this->createBusinessContext();
@@ -351,6 +462,44 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_shared_barcode_product_stock_can_be_adjusted_up_and_down_by_quantity_change(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'JUICE-001',
+            'barcode' => 'JUICE-SHARED-001',
+            'name' => 'Juice',
+            'unit_price' => 80,
+            'quantity_on_hand' => 5,
+        ])->assertCreated()->json('data');
+
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 3,
+            'reason' => 'Received extra stock',
+        ])->assertCreated()
+            ->assertJsonPath('data.quantity_before', 5)
+            ->assertJsonPath('data.quantity_after', 8);
+
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => -2,
+            'reason' => 'Damaged stock',
+        ])->assertCreated()
+            ->assertJsonPath('data.quantity_before', 8)
+            ->assertJsonPath('data.quantity_after', 6);
+
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 0,
+            'reason' => 'No change',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('quantity_change');
+
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 6]);
+    }
+
     public function test_individually_barcoded_stock_is_received_scanned_and_consumed_once(): void
     {
         [$user, $business] = $this->createBusinessContext();
@@ -360,6 +509,7 @@ class ProductInventorySalesTest extends TestCase
             'name' => 'Mandazi',
             'category' => 'Bakery',
             'unit_price' => 10,
+            'barcode_tracking_enabled' => true,
         ])->assertCreated()->json('data');
 
         $this->getJson('/api/v1/products/barcode/UNIT-0001')
@@ -431,6 +581,177 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseCount('sales', 1);
     }
 
+    public function test_same_category_products_with_different_barcodes_remain_separate_in_purchases_and_sales(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+
+        $tea = $this->postJson('/api/v1/products', [
+            'sku' => 'TEA-001',
+            'barcode' => 'TEA-UPC-001',
+            'name' => 'Black Tea',
+            'category' => 'Beverages',
+            'unit_price' => 120,
+        ])->assertCreated()->json('data');
+        $coffee = $this->postJson('/api/v1/products', [
+            'sku' => 'COFFEE-001',
+            'barcode' => 'COFFEE-UPC-001',
+            'name' => 'Ground Coffee',
+            'category' => 'Beverages',
+            'unit_price' => 250,
+        ])->assertCreated()->json('data');
+
+        $purchase = $this->postJson('/api/v1/purchases', [
+            'items' => [
+                ['product_id' => $tea['id'], 'quantity' => 5, 'unit_cost' => 70],
+                ['product_id' => $coffee['id'], 'quantity' => 3, 'unit_cost' => 160],
+            ],
+        ])->assertCreated()
+            ->assertJsonCount(2, 'data.items')
+            ->json('data');
+
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $tea['id'], 'quantity_on_hand' => 5]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $coffee['id'], 'quantity_on_hand' => 3]);
+        $this->getJson('/api/v1/products/barcode/TEA-UPC-001')
+            ->assertOk()
+            ->assertJsonPath('data.product.id', $tea['id']);
+        $this->getJson('/api/v1/products/barcode/COFFEE-UPC-001')
+            ->assertOk()
+            ->assertJsonPath('data.product.id', $coffee['id']);
+
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [
+                ['product_id' => $tea['id'], 'quantity' => 1],
+                ['product_id' => $coffee['id'], 'quantity' => 1],
+            ],
+        ])->assertCreated()
+            ->assertJsonCount(2, 'data.items')
+            ->assertJsonPath('data.items.0.product_id', $tea['id'])
+            ->assertJsonPath('data.items.1.product_id', $coffee['id'])
+            ->assertJsonPath('data.items.0.product_name', 'Black Tea')
+            ->assertJsonPath('data.items.1.product_name', 'Ground Coffee')
+            ->json('data');
+
+        $this->assertDatabaseHas('sale_items', ['sale_id' => $sale['id'], 'product_id' => $tea['id'], 'quantity' => 1]);
+        $this->assertDatabaseHas('sale_items', ['sale_id' => $sale['id'], 'product_id' => $coffee['id'], 'quantity' => 1]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $tea['id'], 'quantity_on_hand' => 4]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $coffee['id'], 'quantity_on_hand' => 2]);
+        $this->assertDatabaseCount('purchase_items', 2);
+    }
+
+    public function test_individually_tracked_products_are_received_through_purchase_unit_barcodes(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'PHONE-001',
+            'name' => 'Mobile phone',
+            'category' => 'Electronics',
+            'unit_price' => 25000,
+            'barcode_tracking_enabled' => true,
+            'quantity_on_hand' => 1,
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('quantity_on_hand');
+
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'PHONE-001',
+            'name' => 'Mobile phone',
+            'category' => 'Electronics',
+            'unit_price' => 25000,
+            'barcode_tracking_enabled' => true,
+        ])->assertCreated()
+            ->assertJsonPath('data.barcode_tracking_enabled', true)
+            ->assertJsonPath('data.quantity_on_hand', 0)
+            ->json('data');
+        $sharedBarcodeProduct = $this->postJson('/api/v1/products', [
+            'sku' => 'CASE-001',
+            'barcode' => 'CASE-SHARED-001',
+            'name' => 'Phone case',
+            'unit_price' => 500,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/barcodes/receive', [
+            'product_id' => $sharedBarcodeProduct['id'],
+            'barcode' => 'CASE-UNIT-001',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('product_id');
+        $this->assertDatabaseHas('products', ['id' => $sharedBarcodeProduct['id'], 'barcode_tracking_enabled' => false]);
+
+        $this->postJson('/api/v1/purchases', [
+            'items' => [['product_id' => $product['id'], 'quantity' => 2, 'unit_cost' => 19000]],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('items');
+        $this->assertDatabaseCount('purchase_orders', 0);
+
+        $purchase = $this->postJson('/api/v1/purchases', [
+            'items' => [[
+                'product_id' => $product['id'],
+                'quantity' => 2,
+                'unit_cost' => 19000,
+                'barcodes' => ['PHONE-SERIAL-001', 'PHONE-SERIAL-002'],
+            ]],
+        ])->assertCreated()
+            ->assertJsonCount(2, 'data.items.0.product_barcodes')
+            ->json('data');
+
+        $this->assertDatabaseHas('product_barcodes', [
+            'business_id' => $business->id,
+            'product_id' => $product['id'],
+            'purchase_item_id' => $purchase['items'][0]['id'],
+            'barcode' => 'PHONE-SERIAL-001',
+            'status' => 'in_stock',
+        ]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 2]);
+        $this->getJson('/api/v1/products/barcode/PHONE-SERIAL-001')
+            ->assertOk()
+            ->assertJsonPath('data.product.id', $product['id'])
+            ->assertJsonPath('data.tracked_barcode', 'PHONE-SERIAL-001');
+    }
+
+    public function test_serialized_cash_refund_requires_and_releases_the_returned_unit_barcode(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'SERIAL-RETURN-001',
+            'name' => 'Serialized device',
+            'unit_price' => 100,
+            'barcode_tracking_enabled' => true,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/inventory/barcodes/receive', [
+            'product_id' => $product['id'],
+            'barcode' => 'RETURN-SERIAL-01',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1, 'barcodes' => ['RETURN-SERIAL-01']]],
+        ])->assertCreated()->json('data');
+
+        $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Device returned',
+            'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 1]],
+        ])->assertUnprocessable();
+
+        $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Device returned',
+            'items' => [[
+                'sale_item_id' => $sale['items'][0]['id'],
+                'quantity' => 1,
+                'barcodes' => ['RETURN-SERIAL-01'],
+            ]],
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('product_barcodes', [
+            'business_id' => $business->id,
+            'barcode' => 'RETURN-SERIAL-01',
+            'status' => 'in_stock',
+            'sale_item_id' => null,
+        ]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 1]);
+    }
+
     public function test_purchase_orders_reject_products_and_suppliers_from_another_business(): void
     {
         [$owner, $business] = $this->createBusinessContext();
@@ -458,6 +779,248 @@ class ProductInventorySalesTest extends TestCase
             ->assertJsonValidationErrors(['supplier_id', 'items.0.product_id']);
 
         $this->assertDatabaseCount('purchase_orders', 0);
+    }
+
+    public function test_service_products_are_sold_without_inventory_or_purchase_stock_movements(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $service = $this->postJson('/api/v1/products', [
+            'sku' => 'HAIRCUT-001',
+            'name' => 'Haircut',
+            'unit_price' => 500,
+            'product_type' => 'service',
+            'service_duration_minutes' => 45,
+            'quantity_on_hand' => 0,
+        ])->assertCreated()
+            ->assertJsonPath('data.product_type', 'service')
+            ->assertJsonPath('data.service_duration_minutes', 45)
+            ->json('data');
+
+        $this->getJson('/api/v1/inventory')->assertOk()->assertJsonCount(0, 'data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $service['id'],
+            'quantity_change' => 1,
+            'reason' => 'Not stock',
+        ])->assertUnprocessable();
+        $this->postJson('/api/v1/purchases', [
+            'items' => [['product_id' => $service['id'], 'quantity' => 1, 'unit_cost' => 100]],
+        ])->assertUnprocessable();
+
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $service['id'], 'quantity' => 1, 'performed_by_user_id' => $user->id]],
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.performed_by_user_id', $user->id)
+            ->json('data');
+
+        $this->assertDatabaseHas('sale_items', ['sale_id' => $sale['id'], 'performed_by_user_id' => $user->id]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $service['id'], 'quantity_on_hand' => 0]);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertDatabaseCount('purchase_orders', 0);
+    }
+
+    public function test_restaurant_orders_reserve_stock_and_settle_at_the_saved_price(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'SOUP-001',
+            'name' => 'Soup',
+            'unit_price' => 150,
+            'quantity_on_hand' => 5,
+        ])->assertCreated()->json('data');
+
+        $order = $this->postJson('/api/v1/restaurant-orders', [
+            'order_type' => 'dine_in',
+            'table_name' => 'Table 4',
+            'items' => [['product_id' => $product['id'], 'quantity' => 2]],
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.unit_price', '150.00')
+            ->json('data');
+        $this->assertDatabaseHas('inventory_stocks', [
+            'product_id' => $product['id'],
+            'quantity_on_hand' => 5,
+            'quantity_reserved' => 2,
+        ]);
+
+        Product::query()->whereKey($product['id'])->update(['unit_price' => 200]);
+
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'restaurant_order_id' => $order['id'],
+            'payment_method' => 'cash',
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.unit_price', '150.00')
+            ->assertJsonPath('data.items.0.line_total', '300.00')
+            ->assertJsonPath('data.total', '300.00')
+            ->json('data');
+
+        $this->assertDatabaseHas('restaurant_orders', ['id' => $order['id'], 'status' => 'paid', 'sale_id' => $sale['id']]);
+        $this->assertDatabaseHas('inventory_stocks', [
+            'product_id' => $product['id'],
+            'quantity_on_hand' => 3,
+            'quantity_reserved' => 0,
+        ]);
+        $this->postJson('/api/v1/sales', [
+            'restaurant_order_id' => $order['id'],
+            'payment_method' => 'cash',
+        ])->assertUnprocessable();
+    }
+
+    public function test_restaurant_cancellation_releases_stock_and_appointment_conflicts_are_rejected(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'CAKE-001',
+            'name' => 'Cake',
+            'unit_price' => 80,
+            'quantity_on_hand' => 4,
+        ])->assertCreated()->json('data');
+        $order = $this->postJson('/api/v1/restaurant-orders', [
+            'order_type' => 'takeaway',
+            'items' => [['product_id' => $product['id'], 'quantity' => 2]],
+        ])->assertCreated()->json('data');
+        $this->patchJson('/api/v1/restaurant-orders/'.$order['id'].'/status', ['status' => 'cancelled'])
+            ->assertOk()->assertJsonPath('data.status', 'cancelled');
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 4, 'quantity_reserved' => 0]);
+
+        $service = $this->postJson('/api/v1/products', [
+            'sku' => 'NAIL-001',
+            'name' => 'Nail service',
+            'unit_price' => 300,
+            'product_type' => 'service',
+            'service_duration_minutes' => 30,
+        ])->assertCreated()->json('data');
+        $startsAt = now()->addDay()->startOfHour();
+        $appointmentPayload = [
+            'service_product_id' => $service['id'],
+            'staff_user_id' => $user->id,
+            'starts_at' => $startsAt->toIso8601String(),
+        ];
+        $appointment = $this->postJson('/api/v1/appointments', $appointmentPayload)
+            ->assertCreated()->assertJsonPath('data.status', 'booked')->json('data');
+        $this->postJson('/api/v1/appointments', [
+            ...$appointmentPayload,
+            'starts_at' => $startsAt->copy()->addMinutes(15)->toIso8601String(),
+        ])->assertUnprocessable()->assertJsonValidationErrors('staff_user_id');
+
+        $this->patchJson('/api/v1/appointments/'.$appointment['id'].'/status', ['status' => 'in_progress'])
+            ->assertOk()->assertJsonPath('data.status', 'in_progress');
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $sale = $this->postJson('/api/v1/sales', [
+            'appointment_id' => $appointment['id'],
+            'payment_method' => 'cash',
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.performed_by_user_id', $user->id)
+            ->json('data');
+        $this->assertDatabaseHas('appointments', [
+            'id' => $appointment['id'],
+            'status' => 'completed',
+            'sale_id' => $sale['id'],
+        ]);
+    }
+
+    public function test_pharmacy_checkout_uses_unexpired_batches_in_first_expiry_order(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update([
+            'industry' => 'pharmacy',
+            'settings' => [...$business->posSettings(), 'enabled_modules' => ['pharmacy']],
+        ]);
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'MED-001',
+            'name' => 'Pain relief tablets',
+            'unit_price' => 120,
+            'batch_tracking_enabled' => true,
+        ])->assertCreated()->json('data');
+
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'LOT-EARLY',
+            'expires_on' => now()->addDays(5)->toDateString(),
+            'quantity' => 2,
+            'unit_cost' => '45.00',
+        ])->assertCreated();
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'LOT-LATE',
+            'expires_on' => now()->addDays(15)->toDateString(),
+            'quantity' => 3,
+            'unit_cost' => '50.00',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+
+        $sale = $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 3]],
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.batch_allocations.0.lot_number', 'LOT-EARLY')
+            ->assertJsonPath('data.items.0.batch_allocations.0.quantity', 2)
+            ->assertJsonPath('data.items.0.batch_allocations.1.lot_number', 'LOT-LATE')
+            ->assertJsonPath('data.items.0.batch_allocations.1.quantity', 1)
+            ->json('data');
+
+        $this->assertDatabaseHas('inventory_batches', ['id' => 1, 'quantity_remaining' => 0]);
+        $this->assertDatabaseHas('inventory_batches', ['id' => 2, 'quantity_remaining' => 2]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 2]);
+        $this->assertDatabaseHas('sale_item_batches', ['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 2]);
+
+        $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Returned unopened medicine',
+            'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 3]],
+        ])->assertCreated()->assertJsonPath('data.amount', '360.00');
+        $this->assertDatabaseHas('inventory_batches', ['id' => 1, 'quantity_remaining' => 2]);
+        $this->assertDatabaseHas('inventory_batches', ['id' => 2, 'quantity_remaining' => 3]);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 5]);
+    }
+
+    public function test_wholesale_quantity_tiers_are_applied_by_the_server_at_checkout(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update([
+            'industry' => 'wholesale',
+            'settings' => [...$business->posSettings(), 'enabled_modules' => ['variants', 'wholesale']],
+        ]);
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'BULK-001',
+            'name' => 'Wholesale rice bag',
+            'unit_price' => 100,
+            'variant_attributes' => ['pack' => '25 kg'],
+            'bulk_pricing' => [
+                ['minimum_quantity' => 10, 'unit_price' => 90],
+                ['minimum_quantity' => 25, 'unit_price' => 80],
+            ],
+        ])->assertCreated()
+            ->assertJsonPath('data.variant_attributes.pack', '25 kg')
+            ->json('data');
+        $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => 30,
+            'reason' => 'Opening count',
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 12]],
+        ])->assertCreated()
+            ->assertJsonPath('data.items.0.unit_price', '90.00')
+            ->assertJsonPath('data.items.0.line_total', '1080.00');
+
+        $this->postJson('/api/v1/products', [
+            'sku' => 'BAD-BULK-001',
+            'name' => 'Invalid tier',
+            'unit_price' => 100,
+            'bulk_pricing' => [
+                ['minimum_quantity' => 10, 'unit_price' => 90],
+                ['minimum_quantity' => 5, 'unit_price' => 80],
+            ],
+        ])->assertUnprocessable()->assertJsonValidationErrors('bulk_pricing');
     }
 
     private function createBusinessContext(): array

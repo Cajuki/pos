@@ -12,7 +12,7 @@ Browser (React + Vite)
   -> PostgreSQL 16; Redis for cache, queue, and sessions
 ```
 
-The REST API is the source of truth for business data and tenant access. A full commercial catalog, inventory ledger, checkout, payment gateway integration, and market intelligence layer are designed for extension without coupling the POS to SellFlux or other downstream systems.
+The REST API is the source of truth for business data and tenant access. The existing application is being extended incrementally; configured payment methods do not imply a live payment-provider integration or verified compliance.
 
 ## Technology Stack
 
@@ -81,7 +81,17 @@ REDIS_PORT=6379
 QUEUE_CONNECTION=redis
 CACHE_STORE=redis
 SESSION_DRIVER=redis
+MAIL_MAILER=smtp
+MAIL_SCHEME=null
+MAIL_HOST=smtp.your-provider.example
+MAIL_PORT=587
+MAIL_USERNAME=your-smtp-username
+MAIL_PASSWORD=your-smtp-password
+MAIL_FROM_ADDRESS=verified-sender@your-domain.example
+MAIL_FROM_NAME=Poss
 ```
+
+The example SMTP host, username, password, and sender above are placeholders. Replace them with the SMTP settings and a verified sender from your email provider. For local development without SMTP, `MAIL_MAILER=log` writes messages to the backend log and does **not** deliver email. When using Docker Compose, set these values in the repository-root `.env`; for local backend development, set them in `backend/.env`. After changing mail settings, clear cached configuration with `php artisan config:clear` in `backend/` (or `docker compose exec backend php artisan config:clear` for Docker) and restart the backend. Team invitations are sent when an owner or admin adds a staff member; the recipient address must be able to receive mail from your configured sender.
 
 ### Frontend
 
@@ -103,14 +113,45 @@ The POS foundation supports:
 
 The business context middleware requires the `X-Business-ID` header and enforces membership validation. This ensures tenants are isolated and Business A cannot access Business B records.
 
+## Product barcodes, purchases, and sales
+
+Create a separate product record for each sellable item/SKU, even when several products share a category. Each record keeps its own SKU, name, shared product barcode (when applicable), price, and stock count. A sale records one line per product with its product ID, SKU/name snapshot, barcode, quantity, and price; products in the same category are not merged.
+
+For clothing and other variant-based catalogs, create a separate product/SKU for every sellable size-colour combination and set its variant attributes (for example, `Size=M`, `Colour=Blue`). Each combination then has independent stock, pricing, barcode, and sales history.
+
+When adding a product, select its barcode tracking mode:
+
+- **One shared barcode per product:** for normal retail, grocery, and wholesale goods where every unit of the same SKU has the same barcode. Scan it at checkout to add one unit; the sale groups units under that product and stock is tracked by quantity. Receive stock by quantity through Purchases or adjust stock in Inventory.
+- **Unique barcode per physical unit:** for serialized stock such as phones, equipment, or individually identified items. Scan a unique barcode for every received unit in Inventory or include one barcode per quantity on a purchase. Checkout requires scanning the in-stock unit barcode and marks that exact unit sold.
+
+Both modes use the same product/category catalog and inventory ledger. Barcode values must be unique within a business, and purchase receipt, stock movements, and checkout update atomically.
+
+### Cash refunds
+
+An authorized role with `sales.refund` can record a cash return against a paid cash sale. The backend limits returns to the unreturned quantity, requires matching serials for serialized products, restores stock and original pharmacy batches, decreases the open register's expected cash, and writes a tenant-scoped audit record in the same database transaction. An open register with sufficient expected cash is required. Credit and electronic-payment refunds are not offered until their settlement/provider workflows exist; a UI setting for a payment method does not settle funds.
+
+### Restaurants and service businesses
+
+- **Restaurants and cafes:** Record dine-in, takeaway, or delivery tickets from the POS using **Send to kitchen**. Open tickets reserve available goods stock, can progress through the kitchen statuses, and can be cancelled to release reservations. Collect cash from Kitchen Orders when the ticket is ready to close. The table field is a free-text label; managed floor plans and table assignments are not included yet. Ticket item prices are captured when the order is placed.
+- **Barbershops and other appointment services:** Create a service product (non-stock item), then book it on Appointments with a team member, customer, and start time. The schedule blocks overlapping appointments for the same team member. Service items can also be rung up directly in the POS and assigned to a team member; they do not consume inventory or appear in Purchases.
+- **General POS use:** Standard product sales remain the default checkout path. Service, restaurant, inventory, and purchase workflows use the same business catalog, customer records, register, and reporting foundation; industry-specific scheduling, kitchen tickets, and staff assignment are optional.
+
 ## Database Setup and Migrations
 
 - PostgreSQL is the configured application database.
 - Business records use UUID identifiers.
 - Business membership is stored through the `business_user` pivot table.
 - Apply schema changes with `php artisan migrate` from `backend/`.
-- For an empty PostgreSQL 16 database, the complete SQL schema is available at [documentation/postgresql-schema.sql](documentation/postgresql-schema.sql). Run it with `psql -v ON_ERROR_STOP=1 -d pos_platform -f documentation/postgresql-schema.sql` after creating the database. It includes the migration ledger for the schema represented in the script.
-- Use Laravel migrations for existing installations and future schema upgrades; do not run the fresh-install SQL against a database that already has application tables.
+- For an empty PostgreSQL 16 database, configure the database and run `php artisan migrate --force` from `backend/`; Laravel migrations are the canonical schema source for both fresh installations and upgrades.
+- [documentation/postgresql-schema.sql](documentation/postgresql-schema.sql) is a legacy baseline snapshot, not a complete representation of current application migrations. Do not use it to provision a current installation or run it against a database that already has application tables.
+
+## Verified capabilities and current boundaries
+
+The backend currently provides business registration and profiles, business-scoped membership authorization, business switching, built-in/custom roles, industry/module configuration, Starter subscription records with product/user limits, catalog and shared/serialized barcode inventory, purchases, suppliers, customers, expenses, cash register sessions, checkout with configured tax/discount rules, reports, restaurant order tickets, service appointments, pharmacy expiry batches with FEFO checkout, wholesale quantity tiers, and the cash-only refund workflow above. Existing migrations already define warehouses, units, payments, refunds, audit logs and webhooks; the existence of those tables is not evidence that all corresponding workflows are complete.
+
+The following remain incomplete and must not be represented as production-ready: branch-level stock and branch permissions; independently managed variant SKU records beyond one product per sellable variant; unit conversions; electronic payment processing/reconciliation, idempotent provider webhooks and payment refunds; payment records for checkout; kitchen modifiers, recipes, ingredient costing, split bills, delivery tracking and wastage; salon walk-in queues, staff scheduling, commissions and reminders; pharmacy prescriptions/dispensing and jurisdiction-specific regulatory validation; promotions/loyalty; customer-specific wholesale pricing, quotations, credit limits and delivery records; general audit coverage beyond cash refunds; and integration to printers, SMS, WhatsApp or SellFlux. Tax configuration is not certification of tax compliance. Validate legal and regulatory requirements with qualified local providers before production use.
+
+Backend tests use the configured SQLite test database. A live PostgreSQL migration/upgrade run and end-to-end browser-to-API test have not been performed as part of this change.
 
 ## Seeders and Demo Data
 
@@ -189,7 +230,7 @@ The POS remains the transactional source of truth. SellFlux may later consume ve
 
 - If the frontend cannot reach the API, confirm `VITE_API_URL`.
 - If login fails, validate the backend environment and database connectivity.
-- If migration errors occur, run `php artisan migrate:fresh --seed` in the backend container or local PHP environment.
+- Apply non-destructive migrations with `php artisan migrate` in the backend container or local PHP environment. Do not run `migrate:fresh` or remove Docker volumes against a database containing data you need.
 - For Docker resets, use `docker compose down -v` when you explicitly want to remove persistent database data.
 
 ## Deployment Notes
@@ -205,7 +246,7 @@ Production deployment should include:
 - monitoring and health checks
 - explicit CORS and origin policy
 
-This repository is intentionally organized as a commercial-start foundation rather than a toy demo, and the final application should be extended with catalog, sales, inventory, payment, reporting, and integrations as required by the business product roadmap.
+This repository is a working POS foundation with the boundaries listed above; production rollout still requires PostgreSQL upgrade verification, external payment/tax integrations, and the applicable industry and jurisdiction-specific workflows.
 
 ## Final Acceptance Workflow
 

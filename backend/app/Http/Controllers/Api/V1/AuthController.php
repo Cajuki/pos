@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\User;
+use App\Support\BusinessPermissions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -17,6 +19,12 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'business_name' => ['required', 'string', 'max:160'],
+            'industry' => ['sometimes', 'string', Rule::in(array_keys(config('pos.industries')))],
+            'currency' => ['sometimes', 'string', Rule::in(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR'])],
+            'timezone' => ['sometimes', 'timezone:all'],
+            'business_phone' => ['sometimes', 'nullable', 'string', 'max:40'],
+            'business_email' => ['sometimes', 'nullable', 'email', 'max:255'],
+            'business_address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'name' => ['required', 'string', 'max:120'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => [
@@ -32,10 +40,17 @@ class AuthController extends Controller
         ]);
 
         [$user, $business, $token] = DB::transaction(function () use ($validated): array {
+            $industry = $validated['industry'] ?? 'general';
             $business = Business::create([
                 'name' => $validated['business_name'],
-                'currency' => 'KES',
-                'timezone' => 'Africa/Nairobi',
+                'industry' => $industry,
+                'currency' => $validated['currency'] ?? 'KES',
+                'timezone' => $validated['timezone'] ?? 'Africa/Nairobi',
+                'settings' => [
+                    'business_phone' => $validated['business_phone'] ?? '',
+                    'business_email' => $validated['business_email'] ?? '',
+                    'business_address' => $validated['business_address'] ?? '',
+                ],
             ]);
             $user = User::create([
                 'name' => $validated['name'],
@@ -43,6 +58,12 @@ class AuthController extends Controller
                 'password' => $validated['password'],
             ]);
             $user->businesses()->attach($business, ['role' => 'owner']);
+            $plan = \App\Models\SubscriptionPlan::query()->where('code', 'starter')->where('is_active', true)->firstOrFail();
+            $business->subscriptions()->create([
+                'subscription_plan_id' => $plan->id,
+                'status' => 'active',
+                'starts_at' => now(),
+            ]);
             $token = $user->createToken('pos-web')->plainTextToken;
 
             return [$user, $business, $token];
@@ -52,13 +73,16 @@ class AuthController extends Controller
             'data' => [
                 'token' => $token,
                 'user' => $user,
-                'business' => $business->only(['id', 'name', 'currency', 'timezone']),
+                'business' => [
+                    ...$business->only(['id', 'name', 'currency', 'timezone', 'industry']),
+                    'modules' => $business->industryModules(),
+                ],
                 'role' => 'owner',
             ],
         ], 201);
     }
 
-    public function login(Request $request): JsonResponse
+    public function login(Request $request, BusinessPermissions $permissions): JsonResponse
     {
         $validated = $request->validate([
             'email' => ['required', 'email'],
@@ -72,13 +96,19 @@ class AuthController extends Controller
             throw ValidationException::withMessages(['email' => ['The provided credentials are incorrect.']]);
         }
 
+        $businesses = $user->is_platform_admin
+            ? Business::query()->orderBy('name')->get()
+            : $user->businesses()->get();
+
         return response()->json([
             'data' => [
                 'token' => $user->createToken($validated['device_name'] ?? 'pos-web')->plainTextToken,
                 'user' => $user,
-                'businesses' => $user->businesses()->get()->map(fn (Business $business): array => [
-                    ...$business->only(['id', 'name', 'currency', 'timezone']),
-                    'role' => $business->pivot->role,
+                'businesses' => $businesses->map(fn (Business $business): array => [
+                    ...$business->only(['id', 'name', 'currency', 'timezone', 'industry']),
+                    'role' => $user->is_platform_admin ? 'platform_admin' : $business->pivot->role,
+                    'modules' => $business->industryModules(),
+                    'permissions' => $permissions->forBusiness($user, $business),
                 ]),
             ],
         ]);
@@ -95,15 +125,19 @@ class AuthController extends Controller
         return response()->json(['message' => 'Logged out successfully.']);
     }
 
-    public function currentBusiness(Request $request): JsonResponse
+    public function currentBusiness(Request $request, BusinessPermissions $permissions): JsonResponse
     {
         $business = $request->attributes->get('business');
-        $membership = $request->user()->businesses()->whereKey($business->getKey())->firstOrFail();
+        $membership = $request->user()->businesses()->whereKey($business->getKey())->first();
+        abort_unless($membership || $request->user()->is_platform_admin, 404);
 
         return response()->json([
             'data' => [
-                ...$business->only(['id', 'name', 'currency', 'timezone']),
-                'role' => $membership->pivot->role,
+                ...$business->only(['id', 'name', 'currency', 'timezone', 'industry']),
+                'role' => $membership?->pivot->role ?? 'platform_admin',
+                'industry' => $business->industry,
+                'modules' => $business->industryModules(),
+                'permissions' => $permissions->forBusiness($request->user(), $business),
             ],
         ]);
     }

@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['sale_id', 'product_id', 'sku', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total'])]
+#[Fillable(['sale_id', 'product_id', 'sku', 'barcode', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total', 'performed_by_user_id'])]
 class SaleItem extends Model
 {
     protected function casts(): array
@@ -33,5 +33,20 @@ class SaleItem extends Model
     public function productBarcodes(): HasMany
     {
         return $this->hasMany(ProductBarcode::class);
+    }
+
+    public function performedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'performed_by_user_id');
+    }
+
+    public function batches(): HasMany
+    {
+        return $this->hasMany(SaleItemBatch::class);
+    }
+
+    public function refundItems(): HasMany
+    {
+        return $this->hasMany(RefundItem::class);
     }
 }

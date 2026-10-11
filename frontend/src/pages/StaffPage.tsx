@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, UserPlus, UsersRound } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { createStaff, getStaff } from '../api/commerce'
+import { createStaff, getBusinessSettings, getStaff } from '../api/commerce'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 
@@ -10,6 +10,7 @@ export default function StaffPage() {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [invitedEmail, setInvitedEmail] = useState<string | null>(null)
   const staffQuery = useQuery({ queryKey: ['business-staff'], queryFn: getStaff })
+  const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const createMutation = useMutation({
     mutationFn: createStaff,
     onSuccess: async (invitation) => {
@@ -49,7 +50,7 @@ export default function StaffPage() {
           <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitStaff}>
             <label className="grid gap-1 text-sm font-medium text-graphite">Full name<input required name="name" maxLength={120} autoComplete="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Email<input required name="email" type="email" maxLength={255} autoComplete="email" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Role<select name="role" defaultValue="cashier" className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5"><option value="admin">Admin</option><option value="manager">Manager</option><option value="cashier">Cashier</option><option value="inventory">Inventory</option></select></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Role<select name="role" defaultValue="cashier" className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5"><option value="admin">Admin</option><option value="manager">Manager</option><option value="cashier">Cashier</option><option value="inventory">Inventory</option>{Object.keys(settingsQuery.data?.settings.role_permissions ?? {}).map((role) => <option key={role} value={role}>{role.replaceAll('_', ' ').replaceAll('-', ' ')}</option>)}</select></label>
             <div className="flex flex-wrap items-center gap-3 sm:col-span-2 xl:col-span-3">
               <Button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Sending invitation...' : 'Send invitation'}</Button>
               {createMutation.isError && <span role="alert" className="flex items-center gap-2 text-sm text-danger"><CircleAlert size={15} /> Could not send the invitation. Check the email and try again.</span>}

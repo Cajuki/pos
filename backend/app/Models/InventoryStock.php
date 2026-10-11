@@ -7,12 +7,15 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['business_id', 'product_id', 'quantity_on_hand'])]
+#[Fillable(['business_id', 'product_id', 'quantity_on_hand', 'quantity_reserved'])]
 class InventoryStock extends Model
 {
     protected function casts(): array
     {
-        return ['quantity_on_hand' => 'integer'];
+        return [
+            'quantity_on_hand' => 'integer',
+            'quantity_reserved' => 'integer',
+        ];
     }
 
     public function product(): BelongsTo

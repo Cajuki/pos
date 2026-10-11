@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BadgeCheck, Building2, CircleAlert, CreditCard, FileText, SlidersHorizontal } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { getBusinessIndustries } from '../api/auth'
 import { getBusinessSettings, updateBusinessSettings, type BusinessSettings } from '../api/commerce'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -55,8 +56,10 @@ export default function SettingsPage() {
 
 function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings }) {
   const queryClient = useQueryClient()
+  const industriesQuery = useQuery({ queryKey: ['business-industries'], queryFn: getBusinessIndustries })
   const [activeTab, setActiveTab] = useState<SettingsTab>('business')
   const [draft, setDraft] = useState(initialSettings)
+  const [newRole, setNewRole] = useState('')
   const saveMutation = useMutation({
     mutationFn: updateBusinessSettings,
     onSuccess: async (settings) => {
@@ -100,6 +103,52 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
     })
   }
 
+  function toggleModule(module: string) {
+    updateDraft((current) => {
+      const enabled = current.settings.enabled_modules.includes(module)
+      return {
+        ...current,
+        settings: {
+          ...current.settings,
+          enabled_modules: enabled
+            ? current.settings.enabled_modules.filter((item) => item !== module)
+            : [...current.settings.enabled_modules, module],
+        },
+      }
+    })
+  }
+
+  function toggleRolePermission(role: string, permission: string) {
+    updateDraft((current) => {
+      const currentPermissions = current.settings.role_permissions[role] ?? []
+      const role_permissions = currentPermissions.includes(permission)
+        ? currentPermissions.filter((item) => item !== permission)
+        : [...currentPermissions, permission]
+
+      return {
+        ...current,
+        settings: {
+          ...current.settings,
+          role_permissions: { ...current.settings.role_permissions, [role]: role_permissions },
+        },
+      }
+    })
+  }
+
+  function addRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const role = newRole.trim().toLowerCase().replaceAll(/\s+/g, '-')
+    if (!/^[a-z][a-z0-9_-]{1,39}$/.test(role) || ['owner', 'admin', 'platform_admin'].includes(role)) return
+    updateDraft((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        role_permissions: { ...current.settings.role_permissions, [role]: [] },
+      },
+    }))
+    setNewRole('')
+  }
+
   return (
     <>
       <div className="mb-5 flex justify-end">
@@ -131,6 +180,17 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
                 <SectionHeading title="Business profile" description="Business details are used across your workspace and customer receipts." />
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   <label className={labelClass}>Business name<input required maxLength={160} className={fieldClass} value={draft.name} onChange={(event) => updateDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+                  <label className={labelClass}>Industry<select className={fieldClass} value={draft.industry} onChange={(event) => {
+                    const selectedIndustry = industriesQuery.data?.find((industry) => industry.key === event.target.value)
+                    if (!selectedIndustry) return
+                    updateDraft((current) => ({
+                      ...current,
+                      industry: selectedIndustry.key,
+                      module_options: selectedIndustry.modules,
+                      modules: [...new Set([...current.modules.filter((module) => !current.module_options.includes(module)), ...selectedIndustry.modules])],
+                      settings: { ...current.settings, enabled_modules: selectedIndustry.modules },
+                    }))
+                  }}>{(industriesQuery.data ?? []).map((industry) => <option key={industry.key} value={industry.key}>{industry.label}</option>)}</select></label>
                   <label className={labelClass}>Currency<select className={fieldClass} value={draft.currency} onChange={(event) => updateDraft((current) => ({ ...current, currency: event.target.value }))}>{currencies.map(([code, label]) => <option key={code} value={code}>{code} · {label}</option>)}</select></label>
                   <label className={labelClass}>Time zone<select className={fieldClass} value={draft.timezone} onChange={(event) => updateDraft((current) => ({ ...current, timezone: event.target.value }))}>
                     {['Africa/Nairobi', 'Africa/Kampala', 'Africa/Dar_es_Salaam', 'Africa/Kigali', 'Africa/Johannesburg', 'UTC', 'Europe/London', 'America/New_York'].map((zone) => <option key={zone} value={zone}>{zone.replaceAll('_', ' ')}</option>)}
@@ -140,6 +200,40 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
                   <label className={labelClass}>Tax identification number<input maxLength={80} className={fieldClass} value={draft.settings.tax_number} onChange={(event) => updateDraft((current) => ({ ...current, settings: { ...current.settings, tax_number: event.target.value } }))} placeholder="Optional" /></label>
                   <label className={`${labelClass} sm:col-span-2`}>Business address<textarea rows={2} maxLength={255} className={fieldClass} value={draft.settings.business_address} onChange={(event) => updateDraft((current) => ({ ...current, settings: { ...current.settings, business_address: event.target.value } }))} placeholder="Street, city, country" /></label>
                 </div>
+                {draft.module_options.length > 0 && <div className="mt-6 border-t border-graphite/10 pt-5">
+                  <SectionHeading title="Industry modules" description="Enable only workflows your team needs. Turning a module off hides it and blocks its API routes without deleting any data." />
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {draft.module_options.map((module) => <label key={module} className="flex items-center gap-3 rounded-lg border border-graphite/10 p-3 text-sm">
+                      <input type="checkbox" checked={draft.settings.enabled_modules.includes(module)} onChange={() => toggleModule(module)} className="h-4 w-4 accent-lime-dark" />
+                      <span className="capitalize">{module.replaceAll('_', ' ')}</span>
+                    </label>)}
+                  </div>
+                </div>}
+                <div className="mt-6 border-t border-graphite/10 pt-5">
+                  <SectionHeading title="Custom roles" description="Create least-privilege roles for this business. Custom roles cannot manage team membership, business settings, or platform access." />
+                  <form onSubmit={addRole} className="mt-3 flex gap-2">
+                    <input aria-label="New role name" maxLength={40} value={newRole} onChange={(event) => setNewRole(event.target.value)} placeholder="e.g. floor-supervisor" className={fieldClass} />
+                    <Button type="submit" variant="secondary">Add role</Button>
+                  </form>
+                  <div className="mt-4 grid gap-3">
+                    {Object.entries(draft.settings.role_permissions).map(([role, permissions]) => <div key={role} className="rounded-lg border border-graphite/10 p-4">
+                      <h3 className="text-sm font-semibold capitalize text-graphite">{role.replaceAll('_', ' ').replaceAll('-', ' ')}</h3>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {['products.read', 'products.manage', 'inventory.read', 'inventory.manage', 'sales.read', 'sales.create', 'sales.refund', 'customers.read', 'customers.manage', 'suppliers.read', 'suppliers.manage', 'purchases.read', 'purchases.manage', 'expenses.read', 'expenses.manage', 'reports.read', 'restaurant.manage', 'appointments.manage'].map((permission) => <label key={permission} className="flex items-center gap-2 text-xs text-graphite/75">
+                          <input type="checkbox" checked={permissions.includes(permission)} onChange={() => toggleRolePermission(role, permission)} className="h-4 w-4 accent-lime-dark" />
+                          {permission.replaceAll('.', ' ').replaceAll('_', ' ')}
+                        </label>)}
+                      </div>
+                    </div>)}
+                  </div>
+                </div>
+                {draft.subscription && <div className="mt-6 rounded-xl border border-graphite/10 bg-graphite/[0.03] p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-graphite/55">Subscription</p>
+                  <p className="mt-1 text-sm font-semibold text-graphite">{draft.subscription.plan.name} · {draft.subscription.status}</p>
+                  <p className="mt-1 text-xs text-graphite/60">
+                    Limits: {Object.entries(draft.subscription.plan.limits).map(([key, value]) => `${key.replaceAll('_', ' ')} ${value ?? 'unlimited'}`).join(' · ')}
+                  </p>
+                </div>}
               </Card>
             )}
 

@@ -10,10 +10,15 @@ export default function ProductsPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [trackingMode, setTrackingMode] = useState<'shared' | 'individual'>('shared')
+  const [productType, setProductType] = useState<'goods' | 'service'>('goods')
+  const [batchTracking, setBatchTracking] = useState(false)
+  const [formError, setFormError] = useState('')
   const deferredSearch = useDeferredValue(search)
   const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const productsQuery = useQuery({ queryKey: ['products', deferredSearch], queryFn: () => getProducts(deferredSearch) })
   const currency = settingsQuery.data?.currency ?? 'KES'
+  const enabledModules = settingsQuery.data?.settings.enabled_modules ?? []
   const createMutation = useMutation({
     mutationFn: createProduct,
     onSuccess: async () => {
@@ -29,19 +34,53 @@ export default function ProductsPage() {
     const sku = String(formData.get('sku') ?? '').trim()
     const unitPrice = Number(formData.get('unit_price'))
     const costPrice = formData.get('cost_price')
+    const variantAttributes = String(formData.get('variant_attributes') ?? '').trim()
+    const bulkPricing = String(formData.get('bulk_pricing') ?? '').trim()
 
     if (!sku || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      setFormError('Enter a valid SKU and selling price.')
       return
     }
+    const variant_attributes: Record<string, string> = {}
+    if (variantAttributes) {
+      for (const entry of variantAttributes.split(',')) {
+        const [key, value, ...extra] = entry.split('=').map((part) => part.trim())
+        if (!key || !value || extra.length || variant_attributes[key]) {
+          setFormError('Enter variants as unique key=value pairs, for example Size=M, Colour=Blue.')
+          return
+        }
+        variant_attributes[key] = value
+      }
+    }
+    const bulk_pricing: Array<{ minimum_quantity: number; unit_price: number }> = []
+    if (bulkPricing) {
+      for (const entry of bulkPricing.split(',')) {
+        const [minimum, price, ...extra] = entry.split(':').map((part) => part.trim())
+        const minimum_quantity = Number(minimum)
+        const unit_price = Number(price)
+        if (!minimum || !price || extra.length || !Number.isInteger(minimum_quantity) || minimum_quantity < 2 || !Number.isInteger(unit_price) || unit_price < 0) {
+          setFormError('Enter bulk tiers as quantity:price pairs, for example 10:90, 50:80.')
+          return
+        }
+        bulk_pricing.push({ minimum_quantity, unit_price })
+      }
+    }
+    setFormError('')
 
     createMutation.mutate({
       sku,
-      barcode: String(formData.get('barcode') ?? '').trim() || undefined,
+      barcode: productType === 'goods' && trackingMode === 'shared' ? String(formData.get('barcode') ?? '').trim() || undefined : undefined,
+      barcode_tracking_enabled: productType === 'goods' && trackingMode === 'individual',
+      batch_tracking_enabled: productType === 'goods' && batchTracking,
+      variant_attributes: Object.keys(variant_attributes).length ? variant_attributes : undefined,
+      bulk_pricing: bulk_pricing.length ? bulk_pricing : undefined,
+      product_type: productType,
+      service_duration_minutes: productType === 'service' ? Number(formData.get('service_duration_minutes') || 30) : undefined,
       name: String(formData.get('name') ?? '').trim(),
       category: String(formData.get('category') ?? '').trim() || undefined,
       unit_price: unitPrice,
       cost_price: costPrice === null || String(costPrice).trim() === '' ? undefined : Number(costPrice),
-      quantity_on_hand: Number(formData.get('quantity_on_hand') || 0),
+      quantity_on_hand: productType === 'goods' && trackingMode === 'shared' && !batchTracking ? Number(formData.get('quantity_on_hand') || 0) : 0,
       reorder_level: Number(formData.get('reorder_level') || 0),
     })
   }
@@ -49,7 +88,10 @@ export default function ProductsPage() {
   const rows = (productsQuery.data ?? []).map((product) => ({
     ...product,
     price: formatCurrency(Number(product.unit_price), currency),
-    stock_status: product.quantity_on_hand <= 0 ? 'Out of stock' : product.quantity_on_hand <= product.reorder_level ? 'Low stock' : 'In stock',
+    stock_display: product.product_type === 'service' ? 'Not tracked' : product.quantity_on_hand,
+    stock_status: product.product_type === 'service'
+      ? 'Service'
+      : product.quantity_available <= 0 ? 'Out of stock' : product.quantity_available <= product.reorder_level ? 'Low stock' : 'In stock',
   }))
 
   return (
@@ -68,16 +110,40 @@ export default function ProductsPage() {
         <Card className="mb-5 w-full p-5">
           <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitProduct}>
             <label className="grid gap-1 text-sm font-medium text-graphite">SKU<input required name="sku" maxLength={64} title="Use letters, numbers, and hyphens only" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Barcode (scan or type)<input name="barcode" maxLength={100} autoFocus placeholder="Scan barcode" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Catalog item type
+              <select value={productType} onChange={(event) => { setProductType(event.target.value === 'service' ? 'service' : 'goods'); setTrackingMode('shared') }} className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5">
+                <option value="goods">Stocked product / menu item</option>
+                <option value="service">Service (no stock)</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-sm font-medium text-graphite">Barcode tracking
+              <select disabled={productType === 'service' || batchTracking} value={trackingMode} onChange={(event) => setTrackingMode(event.target.value === 'individual' ? 'individual' : 'shared')} className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5 disabled:opacity-50">
+                <option value="shared">One shared barcode per product</option>
+                <option value="individual">Unique barcode per physical unit</option>
+              </select>
+            </label>
+            {productType === 'goods' && enabledModules.includes('pharmacy') && <label className="flex items-center gap-2 text-sm font-medium text-graphite">
+              <input type="checkbox" checked={batchTracking} onChange={(event) => { setBatchTracking(event.target.checked); if (event.target.checked) setTrackingMode('shared') }} className="h-4 w-4 accent-lime-dark" />
+              Track pharmacy batch and expiry
+            </label>}
+            {productType === 'goods' && trackingMode === 'shared' && <label className="grid gap-1 text-sm font-medium text-graphite">Product barcode (shared)<input name="barcode" maxLength={100} autoFocus placeholder="Scan barcode" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }} className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>}
             <label className="grid gap-1 text-sm font-medium text-graphite">Product name<input required name="name" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Category<input name="category" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Selling price ({currency})<input required name="unit_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <label className="grid gap-1 text-sm font-medium text-graphite">Cost price ({currency})<input name="cost_price" type="number" min="0" step="1" inputMode="numeric" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
-            <label className="grid gap-1 text-sm font-medium text-graphite">Initial quantity on hand<input name="quantity_on_hand" type="number" min="0" max="2147483647" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+            {productType === 'goods' && enabledModules.includes('variants') && <label className="grid gap-1 text-sm font-medium text-graphite">Variant attributes<input name="variant_attributes" placeholder="Size=M, Colour=Blue" className="rounded-xl border border-graphite/10 px-3 py-2.5" /><span className="text-xs font-normal text-graphite/55">Stored on this sellable SKU.</span></label>}
+            {productType === 'goods' && enabledModules.includes('wholesale') && <label className="grid gap-1 text-sm font-medium text-graphite">Wholesale price tiers<input name="bulk_pricing" placeholder="10:90, 50:80" className="rounded-xl border border-graphite/10 px-3 py-2.5" /><span className="text-xs font-normal text-graphite/55">Quantity:unit price; checkout applies the best qualifying tier.</span></label>}
+            {productType === 'service'
+              ? <label className="grid gap-1 text-sm font-medium text-graphite">Service duration (minutes)<input name="service_duration_minutes" type="number" min="1" max="1440" step="1" defaultValue="30" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+              : batchTracking
+              ? <p className="text-sm text-graphite/65 sm:col-span-2 xl:col-span-3">Initial quantity is received with a lot number and expiry date in Inventory so checkout can consume the earliest-expiring stock first.</p>
+              : trackingMode === 'shared'
+              ? <label className="grid gap-1 text-sm font-medium text-graphite">Initial quantity on hand<input name="quantity_on_hand" type="number" min="0" max="2147483647" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
+              : <p className="text-sm text-graphite/65 sm:col-span-2 xl:col-span-3">After creating this product, receive each serialized unit in Inventory or Purchases by scanning its unique barcode. Stock is counted from those scanned units.</p>}
             <label className="grid gap-1 text-sm font-medium text-graphite">Reorder level<input name="reorder_level" type="number" min="0" step="1" defaultValue="0" className="rounded-xl border border-graphite/10 px-3 py-2.5" /></label>
             <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-3">
               <Button type="submit" disabled={createMutation.isPending}>{createMutation.isPending ? 'Saving...' : 'Save product'}</Button>
-              {createMutation.isError && <span className="text-sm text-danger">Could not save product. Check the SKU and price.</span>}
+              {(formError || createMutation.isError) && <span role="alert" className="text-sm text-danger">{formError || 'Could not save product. Check the SKU, price, and enabled industry modules.'}</span>}
             </div>
           </form>
         </Card>
@@ -96,10 +162,11 @@ export default function ProductsPage() {
           columns={[
             { header: 'Product', accessor: 'name' },
             { header: 'SKU', accessor: 'sku' },
-            { header: 'Barcode', accessor: 'barcode' },
+            { header: 'Type', accessor: 'product_type' },
+            { header: 'Barcode', accessor: 'barcode', render: (product) => product.product_type === 'service' ? '—' : product.barcode_tracking_enabled ? 'Unique per unit' : product.barcode || '—' },
             { header: 'Category', accessor: 'category' },
             { header: 'Selling Price', accessor: 'price' },
-            { header: 'Stock', accessor: 'quantity_on_hand' },
+            { header: 'Stock', accessor: 'stock_display' },
             { header: 'Status', accessor: 'stock_status' },
           ]}
         />

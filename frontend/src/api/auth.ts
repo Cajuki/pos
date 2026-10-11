@@ -6,6 +6,9 @@ export interface BusinessMembership {
   currency: string
   timezone: string
   role: string
+  industry?: string
+  modules?: string[]
+  permissions?: string[]
 }
 
 export interface AuthUser {
@@ -83,6 +86,12 @@ export async function acceptTeamInvitation(token: string, payload: {
 
 export async function registerBusiness(payload: {
   business_name: string
+  industry: string
+  currency: string
+  timezone: string
+  business_phone?: string
+  business_email?: string
+  business_address?: string
   name: string
   email: string
   password: string
@@ -91,10 +100,26 @@ export async function registerBusiness(payload: {
   const response = await apiClient.post<{ data: {
     token: string
     user: AuthUser
-    business: Pick<BusinessMembership, 'id' | 'name' | 'currency' | 'timezone'>
+    business: Pick<BusinessMembership, 'id' | 'name' | 'currency' | 'timezone' | 'industry'> & { modules: string[] }
     role: string
   } }>('/auth/register-business', payload)
 
+  return response.data.data
+}
+
+export interface BusinessIndustry {
+  key: string
+  label: string
+  modules: string[]
+}
+
+export async function getBusinessIndustries(): Promise<BusinessIndustry[]> {
+  const response = await apiClient.get<{ data: BusinessIndustry[] }>('/industries')
+  return response.data.data
+}
+
+export async function getBusinesses(): Promise<BusinessMembership[]> {
+  const response = await apiClient.get<{ data: BusinessMembership[] }>('/businesses')
   return response.data.data
 }
 

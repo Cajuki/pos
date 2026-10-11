@@ -24,11 +24,19 @@ class EnsureBusinessMembership
 
         $business = Business::query()
             ->whereKey($businessId)
-            ->whereHas('users', fn ($query) => $query->whereKey($request->user()->getKey()))
+            ->when(! $request->user()->is_platform_admin, fn ($query) => $query
+                ->whereHas('users', fn ($users) => $users->whereKey($request->user()->getKey())))
             ->first();
 
         if (! $business) {
             return response()->json(['message' => 'Business not found.'], 404);
+        }
+
+        if (! $request->user()->is_platform_admin) {
+            $membership = $request->user()->businesses()->whereKey($business->getKey())->firstOrFail();
+            $request->attributes->set('business_role', $membership->pivot->role);
+        } else {
+            $request->attributes->set('business_role', 'platform_admin');
         }
 
         $request->attributes->set('business', $business);

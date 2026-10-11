@@ -3,17 +3,21 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Appointment;
 use App\Models\CashRegister;
 use App\Models\CashRegisterSession;
 use App\Models\Customer;
+use App\Models\InventoryBatch;
 use App\Models\InventoryStock;
 use App\Models\Product;
 use App\Models\ProductBarcode;
+use App\Models\RestaurantOrder;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class SaleController extends Controller
@@ -23,7 +27,18 @@ class SaleController extends Controller
         $business = $request->attributes->get('business');
         $sales = Sale::query()
             ->where('business_id', $business->id)
-            ->with(['items.productBarcodes', 'customer'])
+            ->with([
+                'items' => fn ($query) => $query->withSum([
+                    'refundItems as refunded_quantity' => fn ($refundItems) => $refundItems->whereHas(
+                        'refund',
+                        fn ($refund) => $refund->where('status', 'completed'),
+                    ),
+                ], 'quantity')->with(['productBarcodes', 'batches.batch:id,lot_number,expires_on']),
+                'customer',
+            ])
+            ->withSum([
+                'refunds as refunded_total' => fn ($refunds) => $refunds->where('status', 'completed'),
+            ], 'amount')
             ->latest()
             ->paginate(25);
 
@@ -36,17 +51,59 @@ class SaleController extends Controller
     public function store(Request $request): JsonResponse
     {
         $business = $request->attributes->get('business');
+        $restaurantOrder = null;
+        if ($request->filled('restaurant_order_id')) {
+            $restaurantOrder = RestaurantOrder::query()
+                ->where('business_id', $business->id)
+                ->with('items')
+                ->findOrFail($request->input('restaurant_order_id'));
+
+            if (in_array($restaurantOrder->status, ['paid', 'cancelled'], true) || $restaurantOrder->sale_id) {
+                throw ValidationException::withMessages(['restaurant_order_id' => 'This table order has already been closed.']);
+            }
+
+            $request->merge([
+                'customer_id' => $restaurantOrder->customer_id,
+                'order_type' => $restaurantOrder->order_type,
+                'table_name' => $restaurantOrder->table_name,
+                'items' => $restaurantOrder->items->map(fn ($item): array => [
+                    'product_id' => $item->product_id,
+                    'quantity' => $item->quantity,
+                ])->all(),
+            ]);
+        } elseif ($request->filled('appointment_id')) {
+            $appointmentContext = Appointment::query()
+                ->where('business_id', $business->id)
+                ->findOrFail($request->input('appointment_id'));
+            $request->merge([
+                'customer_id' => $appointmentContext->customer_id,
+                'items' => [[
+                    'product_id' => $appointmentContext->service_product_id,
+                    'quantity' => 1,
+                ]],
+            ]);
+        }
         $validated = $request->validate([
             'payment_method' => ['required', 'in:cash,credit,mpesa,card,bank'],
             'cash_received' => ['sometimes', 'nullable', 'numeric', 'decimal:0,2', 'min:0', 'prohibited_unless:payment_method,cash'],
             'customer_id' => ['nullable', 'integer'],
+            'restaurant_order_id' => ['sometimes', 'integer', Rule::exists('restaurant_orders', 'id')->where('business_id', $business->id)],
+            'appointment_id' => ['sometimes', 'integer', Rule::exists('appointments', 'id')->where('business_id', $business->id)],
+            'order_type' => ['sometimes', Rule::in(['dine_in', 'takeaway', 'delivery'])],
+            'table_name' => ['nullable', 'string', 'max:80', 'required_if:order_type,dine_in'],
             'discount_percent' => ['sometimes', 'numeric', 'min:0', 'max:100'],
             'items' => ['required', 'array', 'min:1', 'max:100'],
             'items.*.product_id' => ['required', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:100000'],
             'items.*.barcodes' => ['sometimes', 'array'],
             'items.*.barcodes.*' => ['required', 'string', 'max:100', 'distinct'],
+            'items.*.performed_by_user_id' => ['sometimes', 'nullable', 'integer', Rule::exists('business_user', 'user_id')->where('business_id', $business->id)],
         ]);
+        if (isset($validated['restaurant_order_id'], $validated['appointment_id'])) {
+            throw ValidationException::withMessages([
+                'appointment_id' => 'An appointment checkout cannot be combined with a restaurant order.',
+            ]);
+        }
         $settings = $business->posSettings();
 
         if (! in_array($validated['payment_method'], $settings['payment_methods'], true)) {
@@ -61,8 +118,32 @@ class SaleController extends Controller
             ]);
         }
 
-        $sale = DB::transaction(function () use ($business, $request, $validated, $settings): Sale {
+        $sale = DB::transaction(function () use ($business, $request, $validated, $settings, $restaurantOrder): Sale {
+            $lockedOrder = $restaurantOrder ? RestaurantOrder::query()
+                ->where('business_id', $business->id)
+                ->lockForUpdate()
+                ->findOrFail($restaurantOrder->id) : null;
+            if ($lockedOrder && (in_array($lockedOrder->status, ['paid', 'cancelled'], true) || $lockedOrder->sale_id)) {
+                throw ValidationException::withMessages(['restaurant_order_id' => 'This table order has already been closed.']);
+            }
+            $appointment = isset($validated['appointment_id'])
+                ? Appointment::query()
+                    ->where('business_id', $business->id)
+                    ->lockForUpdate()
+                    ->findOrFail($validated['appointment_id'])
+                : null;
+            if ($appointment && (! in_array($appointment->status, ['booked', 'in_progress'], true) || $appointment->sale_id)) {
+                throw ValidationException::withMessages(['appointment_id' => 'This appointment has already been closed.']);
+            }
+            $lockedOrderItems = $lockedOrder?->items()->lockForUpdate()->get()->keyBy('product_id');
             $items = collect($validated['items'])->sortBy('product_id')->values();
+            if ($appointment && ($items->count() !== 1
+                || $items->first()['product_id'] !== $appointment->service_product_id
+                || $items->first()['quantity'] !== 1)) {
+                throw ValidationException::withMessages([
+                    'items' => 'Appointment checkout must contain exactly its booked service.',
+                ]);
+            }
             $productIds = $items->pluck('product_id');
             $customer = null;
             if (! empty($validated['customer_id'])) {
@@ -96,6 +177,17 @@ class SaleController extends Controller
             if ($stocks->count() !== $items->count()) {
                 abort(404, 'Inventory record not found.');
             }
+            $batchProducts = $products->filter(fn (Product $product): bool => $product->batch_tracking_enabled);
+            $batchesByProduct = InventoryBatch::query()
+                ->where('business_id', $business->id)
+                ->whereIn('product_id', $batchProducts->keys())
+                ->whereDate('expires_on', '>=', today())
+                ->where('quantity_remaining', '>', 0)
+                ->orderBy('expires_on')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get()
+                ->groupBy('product_id');
 
             $register = CashRegister::query()
                 ->where('business_id', $business->id)
@@ -120,9 +212,18 @@ class SaleController extends Controller
                 $product = $products->get($item['product_id']);
                 $stock = $stocks->get($item['product_id']);
 
-                if ($stock->quantity_on_hand < $item['quantity']) {
+                if ($product->product_type === 'goods'
+                    && ($lockedOrder
+                        ? $stock->quantity_reserved < $item['quantity'] || $stock->quantity_on_hand < $item['quantity']
+                        : $stock->quantity_on_hand - $stock->quantity_reserved < $item['quantity'])) {
                     throw ValidationException::withMessages([
                         "items.{$index}.quantity" => "Insufficient stock for {$product->name}.",
+                    ]);
+                }
+                if ($product->batch_tracking_enabled
+                    && ($batchesByProduct->get($product->id, collect())->sum('quantity_remaining') < $item['quantity'])) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.quantity" => "Not enough unexpired batch stock for {$product->name}.",
                     ]);
                 }
 
@@ -157,7 +258,8 @@ class SaleController extends Controller
                     }
                 }
 
-                $lineTotalCents = $this->toCents($product->unit_price) * $item['quantity'];
+                $unitPrice = $lockedOrderItems?->get($product->id)?->unit_price ?? $this->bulkUnitPrice($product, $item['quantity']);
+                $lineTotalCents = $this->toCents($unitPrice) * $item['quantity'];
                 if ($lineTotalCents > 999999999999 - $subtotalCents) {
                     throw ValidationException::withMessages(['items' => 'The sale total exceeds the supported amount.']);
                 }
@@ -203,6 +305,8 @@ class SaleController extends Controller
                 'receipt_number' => $receiptNumber,
                 'payment_method' => $validated['payment_method'],
                 'status' => $validated['payment_method'] === 'credit' ? 'on_credit' : 'paid',
+                'order_type' => $validated['order_type'] ?? null,
+                'table_name' => $validated['table_name'] ?? null,
                 'subtotal' => $this->fromCents($subtotalCents),
                 'discount_amount' => $this->fromCents($discountCents),
                 'tax_amount' => $this->fromCents($taxCents),
@@ -217,16 +321,19 @@ class SaleController extends Controller
                 $stock = $stocks->get($item['product_id']);
                 $quantityBefore = $stock->quantity_on_hand;
                 $quantityAfter = $quantityBefore - $item['quantity'];
-                $lineTotalCents = $this->toCents($product->unit_price) * $item['quantity'];
+                $unitPrice = $lockedOrderItems?->get($product->id)?->unit_price ?? $this->bulkUnitPrice($product, $item['quantity']);
+                $lineTotalCents = $this->toCents($unitPrice) * $item['quantity'];
 
                 $saleItem = $sale->items()->create([
                     'product_id' => $product->id,
                     'sku' => $product->sku,
+                    'barcode' => $product->barcode,
                     'product_name' => $product->name,
                     'quantity' => $item['quantity'],
-                    'unit_price' => $product->unit_price,
+                    'unit_price' => $unitPrice,
                     'unit_cost' => $product->cost_price,
                     'line_total' => $this->fromCents($lineTotalCents),
+                    'performed_by_user_id' => $appointment?->staff_user_id ?? ($item['performed_by_user_id'] ?? null),
                 ]);
                 if (! empty($item['barcodes'])) {
                     ProductBarcode::query()
@@ -236,21 +343,55 @@ class SaleController extends Controller
                         ->whereIn('barcode', $item['barcodes'])
                         ->update(['status' => 'sold', 'sale_item_id' => $saleItem->id]);
                 }
-                $stock->update(['quantity_on_hand' => $quantityAfter]);
-                StockMovement::create([
-                    'business_id' => $business->id,
-                    'inventory_stock_id' => $stock->id,
-                    'product_id' => $product->id,
-                    'sale_id' => $sale->id,
-                    'created_by' => $request->user()->id,
-                    'type' => 'sale',
-                    'quantity_change' => -$item['quantity'],
-                    'quantity_before' => $quantityBefore,
-                    'quantity_after' => $quantityAfter,
-                    'reason' => 'Sale '.$receiptNumber,
-                ]);
+                if ($product->product_type === 'goods') {
+                    if ($product->batch_tracking_enabled) {
+                        $quantityRemaining = $item['quantity'];
+                        foreach ($batchesByProduct->get($product->id, collect()) as $batch) {
+                            if ($quantityRemaining === 0) {
+                                break;
+                            }
+                            $taken = min($quantityRemaining, $batch->quantity_remaining);
+                            if ($taken === 0) {
+                                continue;
+                            }
+                            $batch->decrement('quantity_remaining', $taken);
+                            $saleItem->batches()->create([
+                                'inventory_batch_id' => $batch->id,
+                                'quantity' => $taken,
+                            ]);
+                            $quantityRemaining -= $taken;
+                        }
+                        if ($quantityRemaining > 0) {
+                            throw ValidationException::withMessages([
+                                "items.{$index}.quantity" => "Not enough unexpired batch stock for {$product->name}.",
+                            ]);
+                        }
+                    }
+                    $stock->update([
+                        'quantity_on_hand' => $quantityAfter,
+                        'quantity_reserved' => max(0, $stock->quantity_reserved - ($lockedOrder ? $item['quantity'] : 0)),
+                    ]);
+                    StockMovement::create([
+                        'business_id' => $business->id,
+                        'inventory_stock_id' => $stock->id,
+                        'product_id' => $product->id,
+                        'sale_id' => $sale->id,
+                        'created_by' => $request->user()->id,
+                        'type' => 'sale',
+                        'quantity_change' => -$item['quantity'],
+                        'quantity_before' => $quantityBefore,
+                        'quantity_after' => $quantityAfter,
+                        'reason' => 'Sale '.$receiptNumber,
+                    ]);
+                }
             }
 
+            if ($lockedOrder) {
+                $lockedOrder->update(['status' => 'paid', 'sale_id' => $sale->id]);
+            }
+            if ($appointment) {
+                $appointment->update(['status' => 'completed', 'sale_id' => $sale->id]);
+            }
             if ($validated['payment_method'] === 'cash') {
                 $session->update([
                     'expected_cash' => $this->fromCents(
@@ -259,7 +400,7 @@ class SaleController extends Controller
                 ]);
             }
 
-            return $sale->load('items.productBarcodes');
+            return $sale->load(['items.productBarcodes', 'items.batches.batch']);
         });
 
         return response()->json(['data' => $this->saleData($sale)], 201);
@@ -268,7 +409,17 @@ class SaleController extends Controller
     public function show(Request $request, int $sale): JsonResponse
     {
         $business = $request->attributes->get('business');
-        $record = Sale::query()->where('business_id', $business->id)->with(['items.productBarcodes', 'customer'])->findOrFail($sale);
+        $record = Sale::query()->where('business_id', $business->id)->with([
+            'items' => fn ($query) => $query->withSum([
+                'refundItems as refunded_quantity' => fn ($refundItems) => $refundItems->whereHas(
+                    'refund',
+                    fn ($refund) => $refund->where('status', 'completed'),
+                ),
+            ], 'quantity')->with(['productBarcodes', 'batches.batch:id,lot_number,expires_on']),
+            'customer',
+        ])->withSum([
+            'refunds as refunded_total' => fn ($refunds) => $refunds->where('status', 'completed'),
+        ], 'amount')->findOrFail($sale);
 
         return response()->json(['data' => $this->saleData($record)]);
     }
@@ -276,12 +427,19 @@ class SaleController extends Controller
     private function saleData(Sale $sale): array
     {
         return [
-            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given', 'created_at']),
+            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'order_type', 'table_name', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given', 'created_at']),
+            'refunded_total' => (string) ($sale->refunded_total ?? '0.00'),
             'customer' => $sale->customer?->only(['id', 'name', 'phone', 'email']),
             'items' => $sale->items->map(fn ($item): array => [
-                ...$item->only(['product_id', 'sku', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total']),
+                ...$item->only(['product_id', 'sku', 'barcode', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total', 'performed_by_user_id']),
                 'id' => $item->id,
+                'refunded_quantity' => (int) ($item->refunded_quantity ?? 0),
                 'barcodes' => $item->productBarcodes->pluck('barcode')->all(),
+                'batch_allocations' => $item->batches->map(fn ($allocation): array => [
+                    'lot_number' => $allocation->batch->lot_number,
+                    'expires_on' => $allocation->batch->expires_on->toDateString(),
+                    'quantity' => $allocation->quantity,
+                ])->all(),
             ])->all(),
         ];
     }
@@ -296,5 +454,17 @@ class SaleController extends Controller
     private function fromCents(int $amount): string
     {
         return intdiv($amount, 100).'.'.str_pad((string) ($amount % 100), 2, '0', STR_PAD_LEFT);
+    }
+
+    private function bulkUnitPrice(Product $product, int $quantity): string
+    {
+        $unitPrice = (string) $product->unit_price;
+        foreach ($product->bulk_pricing ?? [] as $tier) {
+            if ($quantity >= $tier['minimum_quantity']) {
+                $unitPrice = (string) $tier['unit_price'];
+            }
+        }
+
+        return $unitPrice;
     }
 }

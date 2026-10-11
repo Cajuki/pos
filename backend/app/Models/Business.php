@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\Pivot;
  * @property-read string $id
  * @property-read Pivot $pivot
  */
-#[Fillable(['name', 'currency', 'timezone', 'status', 'settings'])]
+#[Fillable(['name', 'currency', 'timezone', 'status', 'settings', 'industry'])]
 class Business extends Model
 {
     use HasUuids;
@@ -25,6 +25,8 @@ class Business extends Model
 
     public function posSettings(): array
     {
+        $industryModules = config('pos.industries.'.$this->industry.'.modules', []);
+
         return array_replace([
             'business_phone' => '',
             'business_email' => '',
@@ -39,7 +41,11 @@ class Business extends Model
             'default_payment_method' => 'cash',
             'receipt_show_business_details' => true,
             'receipt_footer' => 'Thank you for shopping with us.',
-        ], $this->settings ?? []);
+            'enabled_modules' => $industryModules,
+            'role_permissions' => [],
+        ], $this->settings ?? [], [
+            'enabled_modules' => $this->settings['enabled_modules'] ?? $industryModules,
+        ]);
     }
 
     public function users(): BelongsToMany
@@ -50,5 +56,30 @@ class Business extends Model
     public function teamInvitations(): HasMany
     {
         return $this->hasMany(TeamInvitation::class);
+    }
+
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(BusinessSubscription::class);
+    }
+
+    public function activeSubscription(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(BusinessSubscription::class)
+            ->where('status', 'active')
+            ->where('starts_at', '<=', now())
+            ->where(fn ($query) => $query->whereNull('ends_at')->orWhere('ends_at', '>', now()))
+            ->latestOfMany();
+    }
+
+    public function industryModules(): array
+    {
+        $industry = config('pos.industries.'.$this->industry);
+        $configuredModules = $this->settings['enabled_modules'] ?? $industry['modules'] ?? [];
+
+        return array_values(array_unique([
+            ...config('pos.core_modules'),
+            ...$configuredModules,
+        ]));
     }
 }

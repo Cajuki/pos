@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   ArrowUpRight,
@@ -8,6 +8,7 @@ import {
   ChevronDown,
   CircleHelp,
   CreditCard,
+  CalendarDays,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -17,6 +18,7 @@ import {
   Settings2,
   ShoppingBag,
   ShoppingCart,
+  Utensils,
   UsersRound,
   Wifi,
   WifiOff,
@@ -24,7 +26,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { getCurrentBusiness, logout } from './api/auth'
+import { getBusinesses, getCurrentBusiness, logout } from './api/auth'
 import { getApiHealth } from './api/client'
 import { getInventory, getReportSummary, getSales } from './api/commerce'
 import AuthLayout from './features/auth/AuthLayout'
@@ -33,7 +35,9 @@ import EmailVerificationPage from './features/auth/EmailVerificationPage'
 import ForgotPasswordPage from './features/auth/ForgotPasswordPage'
 import LoginPage from './features/auth/LoginPage'
 import CustomersPage from './pages/CustomersPage'
+import AppointmentsPage from './pages/AppointmentsPage'
 import InventoryPage from './pages/InventoryPage'
+import KitchenOrdersPage from './pages/KitchenOrdersPage'
 import PosPage from './pages/PosPage'
 import ProductsPage from './pages/ProductsPage'
 import PurchasesPage from './pages/PurchasesPage'
@@ -47,18 +51,22 @@ import StaffPage from './pages/StaffPage'
 import { formatCurrency, getInitials } from './lib/utils'
 
 const navigation = [
-  { label: 'Overview', to: '/dashboard', icon: LayoutDashboard },
-  { label: 'Point of sale', to: '/pos', icon: ShoppingCart },
-  { label: 'Products', to: '/products', icon: Boxes },
-  { label: 'Inventory', to: '/inventory', icon: PackageSearch },
-  { label: 'Sales', to: '/sales', icon: CreditCard },
-  { label: 'Customers', to: '/customers', icon: UsersRound },
-  { label: 'Purchases', to: '/purchases', icon: ShoppingBag },
-  { label: 'Reports', to: '/reports', icon: ChartNoAxesCombined },
+  { label: 'Overview', to: '/dashboard', icon: LayoutDashboard, permission: 'reports.read' },
+  { label: 'Point of sale', to: '/pos', icon: ShoppingCart, permission: 'sales.create' },
+  { label: 'Kitchen orders', to: '/kitchen', icon: Utensils, permission: 'restaurant.manage', module: 'restaurant' },
+  { label: 'Appointments', to: '/appointments', icon: CalendarDays, permission: 'appointments.manage', module: 'appointments' },
+  { label: 'Products', to: '/products', icon: Boxes, permission: 'products.read' },
+  { label: 'Inventory', to: '/inventory', icon: PackageSearch, permission: 'inventory.read' },
+  { label: 'Sales', to: '/sales', icon: CreditCard, permission: 'sales.read' },
+  { label: 'Customers', to: '/customers', icon: UsersRound, permission: 'customers.read' },
+  { label: 'Purchases', to: '/purchases', icon: ShoppingBag, permission: 'purchases.read' },
+  { label: 'Reports', to: '/reports', icon: ChartNoAxesCombined, permission: 'reports.read' },
 ]
 
 const pages: Record<string, string> = {
   '/pos': 'Point of sale',
+  '/kitchen': 'Kitchen orders',
+  '/appointments': 'Appointments',
   '/products': 'Products',
   '/inventory': 'Inventory',
   '/sales': 'Sales',
@@ -246,10 +254,12 @@ function ProtectedAppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const title = location.pathname === '/dashboard' ? 'Overview' : pages[location.pathname] ?? 'Overview'
   const profile = getStoredProfile()
-  const businessId = localStorage.getItem('pos_business_id')
+  const [businessId, setBusinessId] = useState(() => localStorage.getItem('pos_business_id'))
+  const businessesQuery = useQuery({ queryKey: ['businesses'], queryFn: getBusinesses, retry: 1 })
   const businessQuery = useQuery({
     queryKey: ['current-business', businessId, profile.id],
     queryFn: getCurrentBusiness,
@@ -259,7 +269,27 @@ function ProtectedAppShell() {
   const businessName = businessQuery.data?.name ?? localStorage.getItem('pos_business_name') ?? 'Business workspace'
   const businessCurrency = businessQuery.data?.currency ?? 'KES'
   const userRole = businessQuery.data?.role ?? localStorage.getItem('pos_user_role') ?? 'Member'
-  const canManageStaff = userRole === 'owner' || userRole === 'admin'
+  const enabledModules = businessQuery.data?.modules ?? []
+  const userPermissions = businessQuery.data?.permissions ?? []
+  const canAccess = (permission: string, module?: string) =>
+    (userPermissions.includes('*') || userPermissions.includes(permission))
+    && (!module || enabledModules.includes(module))
+  const canManageStaff = canAccess('staff.manage')
+  const accessDenied = <div role="status" className="rounded-2xl border border-graphite/10 bg-white p-6 text-sm text-graphite/65">You do not have permission to access this area.</div>
+  const visibleNavigation = navigation.filter(({ permission, module }) =>
+    canAccess(permission, module),
+  )
+
+  const switchBusiness = (nextBusinessId: string) => {
+    const business = businessesQuery.data?.find((item) => item.id === nextBusinessId)
+    if (!business || nextBusinessId === businessId) return
+    localStorage.setItem('pos_business_id', business.id)
+    localStorage.setItem('pos_business_name', business.name)
+    localStorage.setItem('pos_user_role', business.role)
+    queryClient.clear()
+    setBusinessId(business.id)
+    navigate('/dashboard', { replace: true })
+  }
 
   const handleLogout = () => {
     if (isLoggingOut) return
@@ -287,14 +317,18 @@ function ProtectedAppShell() {
           <div className="business-monogram">{getInitials(businessName).slice(0, 1)}</div>
           <div className="business-name">
             <strong>{businessName}</strong>
-            <span>Current business</span>
+            {businessesQuery.data && businessesQuery.data.length > 1
+              ? <select aria-label="Switch business" value={businessId ?? ''} onChange={(event) => switchBusiness(event.target.value)} className="mt-1 w-full bg-transparent text-[11px] text-white/65 outline-none">
+                  {businessesQuery.data.map((business) => <option className="text-graphite" key={business.id} value={business.id}>{business.name}</option>)}
+                </select>
+              : <span>Current business</span>}
           </div>
-          <ChevronDown size={15} />
+          {businessesQuery.data && businessesQuery.data.length > 1 && <ChevronDown size={15} />}
         </div>
 
         <p className="nav-caption">WORKSPACE</p>
         <nav className="main-nav" aria-label="Main navigation">
-          {navigation.map(({ label, to, icon: Icon }) => (
+          {visibleNavigation.map(({ label, to, icon: Icon }) => (
             <NavLink onClick={() => setMobileOpen(false)} key={to} to={to} className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}>
               <Icon size={18} />
               <span>{label}</span>
@@ -313,7 +347,7 @@ function ProtectedAppShell() {
             <strong>Need a hand?</strong>
             <span>Visit the help centre</span>
           </div>
-          {canManageStaff && <NavLink onClick={() => setMobileOpen(false)} to="/settings" className="nav-item settings-link">
+          {canAccess('settings.manage') && <NavLink onClick={() => setMobileOpen(false)} to="/settings" className="nav-item settings-link">
             <Settings2 size={18} />
             <span>Settings</span>
           </NavLink>}
@@ -368,16 +402,18 @@ function ProtectedAppShell() {
         <div className="page-content">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard userName={profile.name} businessName={businessName} currency={businessCurrency} />} />
-            <Route path="/pos" element={<POSPage />} />
-            <Route path="/products" element={<ProductsPage />} />
-            <Route path="/inventory" element={<InventoryPage />} />
-            <Route path="/sales" element={<SalesPage />} />
-            <Route path="/customers" element={<CustomersPage />} />
-            <Route path="/purchases" element={<PurchasesPage />} />
-            <Route path="/reports" element={<ReportsPage />} />
-            <Route path="/team" element={canManageStaff ? <StaffPage /> : <Navigate to="/dashboard" replace />} />
-            <Route path="/settings" element={canManageStaff ? <SettingsPage /> : <Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={canAccess('reports.read') ? <Dashboard userName={profile.name} businessName={businessName} currency={businessCurrency} /> : accessDenied} />
+            <Route path="/pos" element={canAccess('sales.create') ? <POSPage /> : accessDenied} />
+            <Route path="/kitchen" element={canAccess('restaurant.manage', 'restaurant') ? <KitchenOrdersPage /> : accessDenied} />
+            <Route path="/appointments" element={canAccess('appointments.manage', 'appointments') ? <AppointmentsPage /> : accessDenied} />
+            <Route path="/products" element={canAccess('products.read') ? <ProductsPage /> : accessDenied} />
+            <Route path="/inventory" element={canAccess('inventory.read') ? <InventoryPage /> : accessDenied} />
+            <Route path="/sales" element={canAccess('sales.read') ? <SalesPage canRefund={canAccess('sales.refund')} /> : accessDenied} />
+            <Route path="/customers" element={canAccess('customers.read') ? <CustomersPage /> : accessDenied} />
+            <Route path="/purchases" element={canAccess('purchases.read') ? <PurchasesPage /> : accessDenied} />
+            <Route path="/reports" element={canAccess('reports.read') ? <ReportsPage /> : accessDenied} />
+            <Route path="/team" element={canManageStaff ? <StaffPage /> : accessDenied} />
+            <Route path="/settings" element={canAccess('settings.manage') ? <SettingsPage /> : accessDenied} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
 

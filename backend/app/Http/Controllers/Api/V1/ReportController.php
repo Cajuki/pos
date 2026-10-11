@@ -34,7 +34,12 @@ class ReportController extends Controller
             ->where('created_at', '>=', $todayStart)
             ->get();
 
-        $todayRevenue = $todaySales->sum('total');
+        $todayRefunds = DB::table('refunds')
+            ->where('business_id', $business->id)
+            ->where('status', 'completed')
+            ->where('created_at', '>=', $todayStart)
+            ->sum('amount');
+        $todayRevenue = $todaySales->sum('total') - $todayRefunds;
         $todayTransactions = $todaySales->count();
 
         // Total sales in period
@@ -43,7 +48,12 @@ class ReportController extends Controller
             ->where('created_at', '>=', $startDate)
             ->get();
 
-        $periodRevenue = $periodSales->sum('total');
+        $periodRefunds = DB::table('refunds')
+            ->where('business_id', $business->id)
+            ->where('status', 'completed')
+            ->where('created_at', '>=', $startDate)
+            ->sum('amount');
+        $periodRevenue = $periodSales->sum('total') - $periodRefunds;
         $periodTransactions = $periodSales->count();
 
         // Low stock count
@@ -65,6 +75,13 @@ class ReportController extends Controller
         $totalUnits = $stocks->sum('quantity_on_hand');
 
         // Payment breakdown
+        $refundsByPayment = DB::table('refunds')
+            ->join('sales', 'sales.id', '=', 'refunds.sale_id')
+            ->where('refunds.business_id', $business->id)
+            ->where('refunds.status', 'completed')
+            ->select('sales.payment_method', DB::raw('sum(refunds.amount) as total'))
+            ->groupBy('sales.payment_method')
+            ->pluck('total', 'sales.payment_method');
         $paymentBreakdown = Sale::query()
             ->where('business_id', $business->id)
             ->select('payment_method', DB::raw('count(*) as count'), DB::raw('sum(total) as total'))
@@ -73,28 +90,60 @@ class ReportController extends Controller
             ->map(fn ($row) => [
                 'method' => $row->payment_method,
                 'count' => (int) $row->count,
-                'total' => (float) $row->total,
+                'total' => round((float) $row->total - (float) ($refundsByPayment[$row->payment_method] ?? 0), 2),
             ]);
 
         // Sales over time (daily buckets)
         $salesOverTime = Sale::query()
             ->where('business_id', $business->id)
             ->where('created_at', '>=', $startDate)
-            ->select(DB::raw("to_char(created_at, 'YYYY-MM-DD') as day"), DB::raw('sum(total) as total'), DB::raw('count(*) as count'))
+            ->select(DB::raw('DATE(created_at) as day'), DB::raw('sum(total) as total'), DB::raw('count(*) as count'))
             ->groupBy('day')
             ->orderBy('day')
+            ->get();
+        $refundsOverTime = DB::table('refunds')
+            ->where('business_id', $business->id)
+            ->where('status', 'completed')
+            ->where('created_at', '>=', $startDate)
+            ->select(DB::raw('DATE(created_at) as day'), DB::raw('sum(amount) as total'))
+            ->groupBy('day')
             ->get()
-            ->map(fn ($r) => [
-                'date' => $r->day,
-                'total' => (float) $r->total,
-                'transactions' => (int) $r->count,
+            ->keyBy('day');
+        $salesTrend = $salesOverTime->mapWithKeys(fn ($row) => [
+            (string) $row->day => [
+                'date' => (string) $row->day,
+                'total' => (float) $row->total,
+                'transactions' => (int) $row->count,
+            ],
+        ]);
+        foreach ($refundsOverTime as $day => $refund) {
+            $trend = $salesTrend->get((string) $day, [
+                'date' => (string) $day,
+                'total' => 0.0,
+                'transactions' => 0,
             ]);
+            $trend['total'] = round($trend['total'] - (float) $refund->total, 2);
+            $salesTrend->put((string) $day, $trend);
+        }
+        $salesTrend = $salesTrend->sortKeys()->values();
 
         // Top products
+        $refundItemTotals = DB::table('refund_items')
+            ->join('refunds', 'refunds.id', '=', 'refund_items.refund_id')
+            ->join('sales as refund_sales', 'refund_sales.id', '=', 'refunds.sale_id')
+            ->where('refund_sales.business_id', $business->id)
+            ->where('refunds.status', 'completed')
+            ->groupBy('refund_items.sale_item_id')
+            ->select('refund_items.sale_item_id')
+            ->selectRaw('SUM(refund_items.quantity) AS returned_quantity')
+            ->selectRaw('SUM(refund_items.line_amount) AS returned_amount');
         $topProducts = SaleItem::query()
             ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
             ->where('sales.business_id', $business->id)
-            ->select('sale_items.product_name', 'sale_items.sku', DB::raw('sum(sale_items.quantity) as units_sold'), DB::raw('sum(sale_items.line_total) as revenue'))
+            ->leftJoinSub($refundItemTotals, 'refund_totals', 'refund_totals.sale_item_id', '=', 'sale_items.id')
+            ->select('sale_items.product_name', 'sale_items.sku')
+            ->selectRaw('SUM(sale_items.quantity - COALESCE(refund_totals.returned_quantity, 0)) AS units_sold')
+            ->selectRaw('SUM(sale_items.line_total - COALESCE(refund_totals.returned_amount, 0)) AS revenue')
             ->groupBy('sale_items.product_name', 'sale_items.sku')
             ->orderByDesc('units_sold')
             ->limit(5)
@@ -118,7 +167,7 @@ class ReportController extends Controller
                     'low_stock_count' => $lowStockCount,
                 ],
                 'payment_breakdown' => $paymentBreakdown,
-                'sales_trend' => $salesOverTime,
+                'sales_trend' => $salesTrend,
                 'top_products' => $topProducts,
             ],
         ]);

@@ -1,6 +1,6 @@
 -- Poss POS Platform schema for PostgreSQL 16+.
--- Fresh database only. For an existing installation, use Laravel migrations instead.
--- Configure the target database before running: psql -v ON_ERROR_STOP=1 -d pos_platform -f documentation/postgresql-schema.sql
+-- Legacy baseline snapshot only; it does not include all current application migrations.
+-- Provision current installations with `php artisan migrate --force` from backend/ instead.
 
 BEGIN;
 

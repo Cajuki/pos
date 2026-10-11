@@ -592,6 +592,14 @@ button {
 .pos-clear-button { border: 0; color: #a65d45; background: transparent; font-size: 10px; font-weight: 650; cursor: pointer; }
 .pos-cart-lines { max-height: min(39vh, 380px); min-height: 117px; overflow-y: auto; }
 .pos-cart-line { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 22px; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #f0f0e9; }
+.pos-provider-picker { display: grid; min-width: 112px; gap: 3px; color: var(--pos-muted); font-size: 9px; }
+.pos-provider-picker select, .pos-order-type-picker select, .pos-order-type-picker input { min-height: 32px; padding: 0 8px; border: 1px solid #e2e4da; border-radius: 4px; color: var(--pos-ink); background: white; font-size: 10px; }
+.pos-order-type-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 12px; }
+.pos-order-type-picker > label { grid-column: 1 / -1; color: #72776e; font-size: 10px; font-weight: 650; }
+.pos-order-type-picker > input { min-width: 0; }
+.pos-kitchen-button { min-height: 34px; border: 1px solid #d8e0d1; border-radius: 4px; color: #315442; background: #f0f5e9; font-size: 10px; font-weight: 700; cursor: pointer; }
+.pos-kitchen-button:disabled { cursor: not-allowed; opacity: .5; }
+.pos-order-type-picker > p, .pos-order-type-picker > small { grid-column: 1 / -1; margin: 0; color: #a65d45; font-size: 9px; }
 .pos-line-info { display: grid; min-width: 0; gap: 4px; }
 .pos-line-info strong { overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .pos-line-info small { color: var(--pos-muted); font-size: 9px; }

@@ -30,7 +30,9 @@ import {
   getBusinessSettings,
   getProductByBarcode,
   getProducts,
+  getBusinessProviders,
   openCashRegister,
+  createRestaurantOrder,
   type Product,
   type Sale,
 } from '../api/commerce'
@@ -54,6 +56,9 @@ export default function PosPage() {
   const [selectedCategory, setSelectedCategory] = useState('All items')
   const [cart, setCart] = useState<Record<number, number>>({})
   const [cartBarcodes, setCartBarcodes] = useState<Record<number, string[]>>({})
+  const [serviceProviders, setServiceProviders] = useState<Record<number, number>>({})
+  const [orderType, setOrderType] = useState<'standard' | 'dine_in' | 'takeaway' | 'delivery'>('standard')
+  const [tableName, setTableName] = useState('')
   const [selectedProducts, setSelectedProducts] = useState<Record<number, Product>>({})
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<typeof paymentOptions[number]['value'] | null>(null)
   const [receipt, setReceipt] = useState<Sale | null>(null)
@@ -67,6 +72,7 @@ export default function PosPage() {
     queryFn: () => getProducts(deferredSearch, true),
   })
   const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
+  const providersQuery = useQuery({ queryKey: ['business-providers'], queryFn: getBusinessProviders })
   const customerQuery = useQuery({
     queryKey: ['customers', 'pos', customerSearch],
     queryFn: () => getCustomers(customerSearch),
@@ -80,12 +86,29 @@ export default function PosPage() {
       setReceipt(sale)
       setCart({})
       setCartBarcodes({})
+      setServiceProviders({})
       setCashReceived('')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
         queryClient.invalidateQueries({ queryKey: ['products'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
         queryClient.invalidateQueries({ queryKey: ['sales'] }),
+      ])
+    },
+  })
+  const restaurantOrderMutation = useMutation({
+    mutationFn: createRestaurantOrder,
+    onSuccess: async () => {
+      setCart({})
+      setCartBarcodes({})
+      setServiceProviders({})
+      setTableName('')
+      setScanMessage('Order sent to the kitchen.')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['restaurant-orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['inventory'] }),
+        queryClient.invalidateQueries({ queryKey: ['products'] }),
+        queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
       ])
     },
   })
@@ -151,9 +174,9 @@ export default function PosPage() {
     setSelectedProducts((current) => ({ ...current, [product.id]: product }))
     setCart((current) => ({
       ...current,
-      [product.id]: product.barcode_tracking_enabled
+      [product.id]: product.product_type === 'service' || product.barcode_tracking_enabled
         ? (current[product.id] ?? 0) + 1
-        : Math.min((current[product.id] ?? 0) + 1, product.quantity_on_hand),
+        : Math.min((current[product.id] ?? 0) + 1, product.quantity_available),
     }))
     if (trackedBarcode) {
       setCartBarcodes((current) => ({ ...current, [product.id]: [...(current[product.id] ?? []), trackedBarcode] }))
@@ -186,12 +209,12 @@ export default function PosPage() {
         return
       }
 
-      if (product.quantity_on_hand === 0) {
+      if (product.product_type === 'goods' && product.quantity_available === 0) {
         setScanMessage(`${product.name} is out of stock.`)
         return
       }
 
-      if ((cart[product.id] ?? 0) >= product.quantity_on_hand) {
+      if (product.product_type === 'goods' && (cart[product.id] ?? 0) >= product.quantity_available) {
         setScanMessage(`No more ${product.name} is available in stock.`)
         return
       }
@@ -230,7 +253,12 @@ export default function PosPage() {
         return nextCart
       }
 
-      return { ...current, [product.id]: Math.min(nextQuantity, product.quantity_on_hand) }
+      return {
+        ...current,
+        [product.id]: product.product_type === 'service'
+          ? nextQuantity
+          : Math.min(nextQuantity, product.quantity_available),
+      }
     })
   }
 
@@ -240,13 +268,31 @@ export default function PosPage() {
       ...(paymentMethod === 'cash' ? { cash_received: (cashReceivedCents / 100).toFixed(2) } : {}),
       customer_id: selectedCustomer?.id,
       discount_percent: discountRate,
+      ...(orderType !== 'standard' ? { order_type: orderType } : {}),
+      ...(orderType === 'dine_in' ? { table_name: tableName.trim() } : {}),
       items: cartLines.map(({ product, quantity }) => ({
         product_id: product.id,
         quantity,
         ...(product.barcode_tracking_enabled ? { barcodes: cartBarcodes[product.id] ?? [] } : {}),
+        ...(serviceProviders[product.id] ? { performed_by_user_id: serviceProviders[product.id] } : {}),
       })),
     })
   }
+
+  function sendToKitchen() {
+    if (orderType === 'standard') return
+    restaurantOrderMutation.mutate({
+      customer_id: selectedCustomer?.id,
+      order_type: orderType,
+      ...(orderType === 'dine_in' ? { table_name: tableName.trim() } : {}),
+      items: cartLines.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
+    })
+  }
+
+  const canSendToKitchen = orderType !== 'standard'
+    && cartLines.length > 0
+    && (orderType !== 'dine_in' || Boolean(tableName.trim()))
+    && !cartLines.some(({ product }) => product.barcode_tracking_enabled)
 
   return (
     <section className="pos-workspace">
@@ -295,10 +341,10 @@ export default function PosPage() {
           ) : (
             <div className="pos-product-grid">
               {visibleProducts.map((product) => (
-                <button key={product.id} type="button" disabled={product.quantity_on_hand === 0 || product.barcode_tracking_enabled} onClick={() => addProduct(product)} className="pos-product-card" title={product.barcode_tracking_enabled ? 'Scan an individual unit barcode to add this product' : undefined}>
+                <button key={product.id} type="button" disabled={(product.product_type === 'goods' && product.quantity_available === 0) || product.barcode_tracking_enabled} onClick={() => addProduct(product)} className="pos-product-card" title={product.barcode_tracking_enabled ? 'Scan an individual unit barcode to add this product' : undefined}>
                   <span className="pos-product-mark"><Store size={18} /></span>
                   <span className="pos-product-copy"><strong>{product.name}</strong><small>{product.category || product.sku}</small></span>
-                  <span className="pos-product-bottom"><strong>{formatCurrency(Number(product.unit_price), currency)}</strong><small className={product.quantity_on_hand <= product.reorder_level ? 'low-stock' : ''}>{product.quantity_on_hand} in stock</small></span>
+                  <span className="pos-product-bottom"><strong>{formatCurrency(Number(product.unit_price), currency)}</strong><small className={product.product_type === 'goods' && product.quantity_available <= product.reorder_level ? 'low-stock' : ''}>{product.product_type === 'service' ? `${product.service_duration_minutes ?? 30} min service` : `${product.quantity_available} available`}</small></span>
                   <span className="pos-add-mark"><Plus size={16} /></span>
                 </button>
               ))}
@@ -345,10 +391,28 @@ export default function PosPage() {
             {cartLines.map(({ product, quantity }) => (
               <div key={product.id} className="pos-cart-line">
                 <div className="pos-line-info"><strong>{product.name}</strong><small>{formatCurrency(Number(product.unit_price), currency)} each</small></div>
+                {product.product_type === 'service' && (
+                  <label className="pos-provider-picker">
+                    <span>Staff member</span>
+                    <select
+                      aria-label={`Staff member for ${product.name}`}
+                      value={serviceProviders[product.id] ?? ''}
+                      onChange={(event) => setServiceProviders((current) => ({
+                        ...current,
+                        [product.id]: Number(event.target.value),
+                      }))}
+                    >
+                      <option value="">Unassigned</option>
+                      {(providersQuery.data ?? []).map((provider) => (
+                        <option key={provider.id} value={provider.id}>{provider.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <div className="pos-quantity-control">
                   <button type="button" title="Decrease quantity" aria-label={`Decrease ${product.name}`} onClick={() => changeQuantity(product, -1)}><Minus size={13} /></button>
                   <span>{quantity}</span>
-                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={product.barcode_tracking_enabled || quantity >= product.quantity_on_hand} onClick={() => changeQuantity(product, 1)}><Plus size={13} /></button>
+                  <button type="button" title="Increase quantity" aria-label={`Increase ${product.name}`} disabled={product.barcode_tracking_enabled || (product.product_type === 'goods' && quantity >= product.quantity_available)} onClick={() => changeQuantity(product, 1)}><Plus size={13} /></button>
                 </div>
                 <strong className="pos-line-total">{formatCurrency(Number(product.unit_price) * quantity, currency)}</strong>
                 <button className="pos-remove-line" type="button" title="Remove item" aria-label={`Remove ${product.name}`} onClick={() => changeQuantity(product, -quantity)}><Trash2 size={15} /></button>
@@ -358,6 +422,35 @@ export default function PosPage() {
           </div>
 
           <div className="pos-payment-area">
+            <div className="pos-order-type-picker">
+              <label htmlFor="pos-order-type">Order type</label>
+              <select id="pos-order-type" value={orderType} onChange={(event) => setOrderType(event.target.value as typeof orderType)}>
+                <option value="standard">Standard sale</option>
+                <option value="dine_in">Dine in</option>
+                <option value="takeaway">Takeaway</option>
+                <option value="delivery">Delivery</option>
+              </select>
+              {orderType === 'dine_in' && (
+                <input
+                  aria-label="Table name or number"
+                  value={tableName}
+                  onChange={(event) => setTableName(event.target.value)}
+                  placeholder="Table name or number"
+                />
+              )}
+              <button
+                className="pos-kitchen-button"
+                type="button"
+                disabled={!canSendToKitchen || restaurantOrderMutation.isPending}
+                onClick={sendToKitchen}
+              >
+                {restaurantOrderMutation.isPending ? 'Sending...' : 'Send to kitchen'}
+              </button>
+              {restaurantOrderMutation.isError && <p role="alert">Order could not be sent. Check stock and retry.</p>}
+              {cartLines.some(({ product }) => product.barcode_tracking_enabled) && (
+                <small>Individually barcoded items must be scanned and paid at checkout; send other items as kitchen orders.</small>
+              )}
+            </div>
             <div className="pos-customer-picker">
               <label htmlFor="pos-customer-search">Customer <small>(optional)</small></label>
               {selectedCustomer ? (
@@ -446,7 +539,7 @@ export default function PosPage() {
             <div className="printable-receipt" aria-label="Printable sales receipt">
               <header className="receipt-header">
                 <p className="receipt-brand">{businessSettings?.name ?? 'POSS POS'}</p>
-                <h3>Retail Receipt</h3>
+                <h3>{receipt.order_type === 'dine_in' ? 'Dine-in Receipt' : receipt.order_type === 'delivery' ? 'Delivery Receipt' : 'POS Receipt'}</h3>
                 <p>{new Date(receipt.created_at).toLocaleString('en-KE', { timeZone: businessSettings?.timezone ?? 'Africa/Nairobi' })}</p>
               </header>
               {preferences?.receipt_show_business_details && (
@@ -466,7 +559,7 @@ export default function PosPage() {
                   <div key={`${receipt.id}-${item.product_id}-${item.sku}`} className="receipt-item">
                     <div className="receipt-item-main">
                       <strong>{item.product_name}</strong>
-                      <small>{item.quantity} × {formatCurrency(Number(item.unit_price), currency)}</small>
+                      <small>{item.quantity} × {formatCurrency(Number(item.unit_price), currency)}{item.barcode ? ` · ${item.barcode}` : ''}</small>
                     </div>
                     <span>{formatCurrency(Number(item.line_total), currency)}</span>
                   </div>

@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ProductController extends Controller
 {
@@ -51,6 +52,7 @@ class ProductController extends Controller
         $validated = $request->validate([
             'sku' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)],
             'barcode' => [
+                Rule::prohibitedIf($request->boolean('barcode_tracking_enabled')),
                 'nullable',
                 'string',
                 'max:100',
@@ -59,15 +61,82 @@ class ProductController extends Controller
             ],
             'name' => ['required', 'string', 'max:255'],
             'category' => ['nullable', 'string', 'max:100'],
+            'product_type' => ['sometimes', Rule::in(['goods', 'service'])],
+            'service_duration_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'variant_attributes' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'variant_attributes.*' => ['required', 'string', 'max:120'],
+            'bulk_pricing' => ['sometimes', 'nullable', 'array', 'max:20'],
+            'bulk_pricing.*.minimum_quantity' => ['required', 'integer', 'min:2', 'max:100000'],
+            'bulk_pricing.*.unit_price' => ['required', 'integer', 'min:0'],
+            'batch_tracking_enabled' => ['sometimes', 'boolean'],
             'description' => ['nullable', 'string', 'max:5000'],
             'unit_price' => ['required', 'integer', 'min:0'],
             'cost_price' => ['nullable', 'integer', 'min:0'],
             'quantity_on_hand' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
             'reorder_level' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
+            'barcode_tracking_enabled' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
+        $validated['product_type'] ??= 'goods';
+        $enabledModules = $business->posSettings()['enabled_modules'];
+        if (! empty($validated['variant_attributes']) && ! in_array('variants', $enabledModules, true)) {
+            throw ValidationException::withMessages(['variant_attributes' => 'Enable the product variants module for this business first.']);
+        }
+        if (! empty($validated['bulk_pricing']) && ! in_array('wholesale', $enabledModules, true)) {
+            throw ValidationException::withMessages(['bulk_pricing' => 'Enable the wholesale pricing module for this business first.']);
+        }
+        if (($validated['batch_tracking_enabled'] ?? false) && ! in_array('pharmacy', $enabledModules, true)) {
+            throw ValidationException::withMessages(['batch_tracking_enabled' => 'Enable the pharmacy inventory module for this business first.']);
+        }
+        $this->validateBulkPricing($validated['bulk_pricing'] ?? [], $validated['unit_price']);
+
+        if ($validated['product_type'] === 'service') {
+            if (isset($validated['barcode']) || ($validated['barcode_tracking_enabled'] ?? false)) {
+                throw ValidationException::withMessages([
+                    'barcode' => 'Services are non-stock items and cannot use product or serialized barcodes.',
+                ]);
+            }
+            if (($validated['quantity_on_hand'] ?? 0) > 0) {
+                throw ValidationException::withMessages([
+                    'quantity_on_hand' => 'Services do not have stock quantities.',
+                ]);
+            }
+            unset($validated['barcode_tracking_enabled']);
+            unset($validated['batch_tracking_enabled']);
+            $validated['service_duration_minutes'] ??= 30;
+        } elseif (isset($validated['service_duration_minutes'])) {
+            throw ValidationException::withMessages([
+                'service_duration_minutes' => 'Duration can only be set for a service.',
+            ]);
+        }
+
+        if (($validated['barcode_tracking_enabled'] ?? false) && ($validated['quantity_on_hand'] ?? 0) > 0) {
+            throw ValidationException::withMessages([
+                'quantity_on_hand' => 'Receive individually tracked stock by scanning each unit barcode.',
+            ]);
+        }
+        if (($validated['batch_tracking_enabled'] ?? false) && ($validated['quantity_on_hand'] ?? 0) > 0) {
+            throw ValidationException::withMessages([
+                'quantity_on_hand' => 'Receive batch-tracked inventory through the batch receiving workflow.',
+            ]);
+        }
+        if (($validated['batch_tracking_enabled'] ?? false) && ($validated['barcode_tracking_enabled'] ?? false)) {
+            throw ValidationException::withMessages([
+                'batch_tracking_enabled' => 'Batch tracking and serialized barcode tracking cannot be enabled together.',
+            ]);
+        }
+
         $product = DB::transaction(function () use ($business, $request, $validated): Product {
+            $business->newQuery()->whereKey($business->getKey())->lockForUpdate()->firstOrFail();
+            $subscription = $business->activeSubscription()->with('plan')->first();
+            $productLimit = $subscription?->plan?->limits['products'] ?? null;
+            if ($productLimit !== null && Product::query()->where('business_id', $business->id)->count() >= $productLimit) {
+                throw ValidationException::withMessages([
+                    'products' => "This business has reached its {$productLimit}-product subscription limit.",
+                ]);
+            }
+
             $quantityOnHand = $validated['quantity_on_hand'] ?? 0;
             unset($validated['quantity_on_hand']);
 
@@ -113,6 +182,7 @@ class ProductController extends Controller
             'sku' => ['sometimes', 'required', 'string', 'max:64', 'regex:/^[A-Za-z0-9-]+$/', Rule::unique('products', 'sku')->where('business_id', $business->id)->ignore($record->id)],
             'barcode' => [
                 'sometimes',
+                Rule::prohibitedIf($record->barcode_tracking_enabled),
                 'nullable',
                 'string',
                 'max:100',
@@ -121,12 +191,58 @@ class ProductController extends Controller
             ],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'category' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'product_type' => ['sometimes', Rule::in(['goods', 'service'])],
+            'service_duration_minutes' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:1440'],
+            'variant_attributes' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'variant_attributes.*' => ['required', 'string', 'max:120'],
+            'bulk_pricing' => ['sometimes', 'nullable', 'array', 'max:20'],
+            'bulk_pricing.*.minimum_quantity' => ['required', 'integer', 'min:2', 'max:100000'],
+            'bulk_pricing.*.unit_price' => ['required', 'integer', 'min:0'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'unit_price' => ['sometimes', 'required', 'integer', 'min:0'],
             'cost_price' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'reorder_level' => ['sometimes', 'integer', 'min:0', 'max:2147483647'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
+
+        $nextType = $validated['product_type'] ?? $record->product_type;
+        $enabledModules = $business->posSettings()['enabled_modules'];
+        if (array_key_exists('variant_attributes', $validated)
+            && ! empty($validated['variant_attributes'])
+            && ! in_array('variants', $enabledModules, true)) {
+            throw ValidationException::withMessages(['variant_attributes' => 'Enable the product variants module for this business first.']);
+        }
+        if (array_key_exists('bulk_pricing', $validated)
+            && ! empty($validated['bulk_pricing'])
+            && ! in_array('wholesale', $enabledModules, true)) {
+            throw ValidationException::withMessages(['bulk_pricing' => 'Enable the wholesale pricing module for this business first.']);
+        }
+        if (array_key_exists('bulk_pricing', $validated)) {
+            $this->validateBulkPricing($validated['bulk_pricing'] ?? [], $validated['unit_price'] ?? $record->unit_price);
+        }
+        if ($nextType === 'service') {
+            if ($record->inventoryStock?->quantity_on_hand > 0
+                || $record->barcode_tracking_enabled
+                || $record->trackedBarcodes()->exists()
+                || ($record->barcode && ! array_key_exists('barcode', $validated))
+                || isset($validated['barcode'])) {
+                throw ValidationException::withMessages([
+                    'product_type' => 'A stocked or previously barcoded product cannot be converted to a service.',
+                ]);
+            }
+            if (isset($validated['barcode_tracking_enabled']) || (isset($validated['quantity_on_hand']) && $validated['quantity_on_hand'] > 0)) {
+                throw ValidationException::withMessages([
+                    'product_type' => 'Services cannot use serialized barcode tracking or stock quantities.',
+                ]);
+            }
+            unset($validated['barcode_tracking_enabled']);
+            $validated['barcode'] = null;
+            $validated['service_duration_minutes'] ??= $record->service_duration_minutes ?? 30;
+        } elseif (isset($validated['service_duration_minutes'])) {
+            throw ValidationException::withMessages([
+                'service_duration_minutes' => 'Duration can only be set for a service.',
+            ]);
+        }
 
         $record->update($validated);
 
@@ -143,9 +259,32 @@ class ProductController extends Controller
     private function productData(Product $product): array
     {
         return [
-            ...$product->only(['id', 'sku', 'barcode', 'barcode_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
+            ...$product->only(['id', 'sku', 'barcode', 'barcode_tracking_enabled', 'product_type', 'service_duration_minutes', 'variant_attributes', 'bulk_pricing', 'batch_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
             'quantity_on_hand' => $product->inventoryStock?->quantity_on_hand ?? 0,
+            'quantity_available' => max(
+                0,
+                ($product->inventoryStock?->quantity_on_hand ?? 0) - ($product->inventoryStock?->quantity_reserved ?? 0),
+            ),
         ];
+    }
+
+    private function validateBulkPricing(array $tiers, string|int $basePrice): void
+    {
+        $previousQuantity = 1;
+        $basePrice = (int) $basePrice;
+        foreach ($tiers as $tier) {
+            if ($tier['minimum_quantity'] <= $previousQuantity) {
+                throw ValidationException::withMessages([
+                    'bulk_pricing' => 'Bulk price quantities must be listed in strictly increasing order.',
+                ]);
+            }
+            if ($tier['unit_price'] > $basePrice) {
+                throw ValidationException::withMessages([
+                    'bulk_pricing' => 'A bulk unit price cannot be greater than the standard price.',
+                ]);
+            }
+            $previousQuantity = $tier['minimum_quantity'];
+        }
     }
 
     public function barcode(Request $request, string $barcode): JsonResponse

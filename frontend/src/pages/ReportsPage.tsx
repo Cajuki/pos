@@ -10,14 +10,14 @@ export default function ReportsPage() {
   const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const sales = salesQuery.data ?? []
   const currency = settingsQuery.data?.currency ?? 'KES'
-  const revenueCents = sales.reduce((total, sale) => total + toCents(sale.total), 0)
-  const unitsSold = sales.reduce((total, sale) => total + sale.items.reduce((itemTotal, item) => itemTotal + item.quantity, 0), 0)
+  const revenueCents = sales.reduce((total, sale) => total + toCents(sale.total) - toCents(sale.refunded_total), 0)
+  const unitsSold = sales.reduce((total, sale) => total + sale.items.reduce((itemTotal, item) => itemTotal + item.quantity - item.refunded_quantity, 0), 0)
   const cashSales = sales.filter((sale) => sale.payment_method === 'cash').length
   const rows = sales.map((sale) => ({
     ...sale,
     date: new Date(sale.created_at).toLocaleDateString(),
-    units: sale.items.reduce((total, item) => total + item.quantity, 0),
-    revenue: formatCurrency(Number(sale.total), currency),
+    units: sale.items.reduce((total, item) => total + item.quantity - item.refunded_quantity, 0),
+    revenue: formatCurrency(Number(sale.total) - Number(sale.refunded_total), currency),
   }))
 
   return (
