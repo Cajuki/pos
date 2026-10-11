@@ -425,6 +425,21 @@ function ProtectedAppShell() {
         </div>
       </main>
 
+      <nav className="mobile-nav" aria-label="Quick navigation">
+        {canAccess('reports.read') && <NavLink to="/dashboard" aria-label="Overview" className={({ isActive }) => `mobile-nav-link ${isActive ? 'mobile-nav-active' : ''}`}>
+          <LayoutDashboard size={19} /><span>Home</span>
+        </NavLink>}
+        {canAccess('sales.create') && <NavLink to="/pos" aria-label="Point of sale" className={({ isActive }) => `mobile-nav-link mobile-nav-pos ${isActive ? 'mobile-nav-active' : ''}`}>
+          <ShoppingCart size={20} /><span>Sell</span>
+        </NavLink>}
+        {canAccess('sales.read') && <NavLink to="/sales" aria-label="Sales" className={({ isActive }) => `mobile-nav-link ${isActive ? 'mobile-nav-active' : ''}`}>
+          <CreditCard size={19} /><span>Sales</span>
+        </NavLink>}
+        <button type="button" className={`mobile-nav-link ${mobileOpen ? 'mobile-nav-active' : ''}`} onClick={() => setMobileOpen(true)} aria-label="Open all sections">
+          <Menu size={20} /><span>More</span>
+        </button>
+      </nav>
+
       {mobileOpen && <button className="mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={19} /></button>}
     </div>
   )
