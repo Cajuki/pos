@@ -222,8 +222,8 @@ function Dashboard({ userName, businessName, currency }: { userName: string; bus
   )
 }
 
-function POSPage() {
-  return <PosPage />
+function POSPage({ canManageRegisters }: { canManageRegisters: boolean }) {
+  return <PosPage canManageRegisters={canManageRegisters} />
 }
 
 function clearAuthSession() {
@@ -403,7 +403,7 @@ function ProtectedAppShell() {
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={canAccess('reports.read') ? <Dashboard userName={profile.name} businessName={businessName} currency={businessCurrency} /> : accessDenied} />
-            <Route path="/pos" element={canAccess('sales.create') ? <POSPage /> : accessDenied} />
+            <Route path="/pos" element={canAccess('sales.create') ? <POSPage canManageRegisters={canAccess('registers.manage')} /> : accessDenied} />
             <Route path="/kitchen" element={canAccess('restaurant.manage', 'restaurant') ? <KitchenOrdersPage /> : accessDenied} />
             <Route path="/appointments" element={canAccess('appointments.manage', 'appointments') ? <AppointmentsPage /> : accessDenied} />
             <Route path="/products" element={canAccess('products.read') ? <ProductsPage /> : accessDenied} />

@@ -118,11 +118,15 @@ class RefundController extends Controller
                 ];
             }
 
-            $register = CashRegister::query()
+            $registerQuery = CashRegister::query()
                 ->where('business_id', $business->id)
-                ->where('code', 'REG-01')
-                ->where('is_active', true)
-                ->first();
+                ->where('is_active', true);
+            if ($record->cash_register_id) {
+                $registerQuery->whereKey($record->cash_register_id);
+            } else {
+                $registerQuery->where('code', 'REG-01');
+            }
+            $register = $registerQuery->first();
             $session = $register ? CashRegisterSession::query()
                 ->where('business_id', $business->id)
                 ->where('cash_register_id', $register->id)

@@ -58,6 +58,26 @@ class EnsureBusinessPermission
             return 'sales.refund';
         }
 
+        if (str_contains($path, 'cash-registers')) {
+            if ($request->isMethod('post') && str_ends_with($path, 'cash-registers')) {
+                return 'registers.manage';
+            }
+
+            if (in_array($request->method(), ['GET', 'HEAD'], true)) {
+                return 'sales.read';
+            }
+
+            return 'sales.create';
+        }
+
+        if (str_contains($path, 'branches')) {
+            return in_array($request->method(), ['GET', 'HEAD'], true) ? 'branches.read' : 'branches.manage';
+        }
+
+        if (str_contains($path, 'warehouses')) {
+            return in_array($request->method(), ['GET', 'HEAD'], true) ? 'warehouses.read' : 'warehouses.manage';
+        }
+
         if (str_contains($path, 'appointments')) {
             return 'appointments.manage';
         }

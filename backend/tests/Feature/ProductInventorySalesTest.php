@@ -4,9 +4,11 @@ namespace Tests\Feature;
 
 use App\Models\Business;
 use App\Models\Product;
+use App\Models\StockMovement;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class ProductInventorySalesTest extends TestCase
@@ -217,6 +219,98 @@ class ProductInventorySalesTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('cash_register');
         $this->assertDatabaseCount('sales', 2);
+    }
+
+    public function test_checkout_idempotency_replays_the_original_sale_without_changing_stock_or_cash(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'IDEMPOTENT-001',
+            'name' => 'Retry-safe item',
+            'unit_price' => 25,
+            'quantity_on_hand' => 5,
+        ])->assertCreated()->json('data');
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $payload = [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ];
+
+        $firstSale = $this->withHeader('Idempotency-Key', 'checkout-2026-0001')
+            ->postJson('/api/v1/sales', $payload)
+            ->assertCreated()
+            ->json('data');
+        $replayedSale = $this->withHeader('Idempotency-Key', 'checkout-2026-0001')
+            ->postJson('/api/v1/sales', $payload)
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame($firstSale['id'], $replayedSale['id']);
+        $this->assertDatabaseCount('sales', 1);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 4]);
+        $this->assertDatabaseHas('cash_register_sessions', ['business_id' => $business->id, 'expected_cash' => '25.00']);
+
+        $this->withHeader('Idempotency-Key', 'checkout-2026-0001')
+            ->postJson('/api/v1/sales', [
+                'payment_method' => 'cash',
+                'items' => [['product_id' => $product['id'], 'quantity' => 2]],
+            ])
+            ->assertConflict();
+        $this->assertDatabaseCount('sales', 1);
+    }
+
+    public function test_sales_and_refunds_reconcile_against_the_selected_cash_register(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $defaultRegister = $this->getJson('/api/v1/cash-registers/current')->assertOk()->json('data.register');
+        $sideRegister = $this->postJson('/api/v1/cash-registers', [
+            'name' => 'Side Counter',
+            'code' => 'side-01',
+        ])->assertCreated()->assertJsonPath('data.register.code', 'SIDE-01')->json('data.register');
+        $this->postJson('/api/v1/cash-registers/open', [
+            'register_id' => $defaultRegister['id'],
+            'opening_balance' => '10.00',
+        ])->assertCreated();
+        $sideSession = $this->postJson('/api/v1/cash-registers/open', [
+            'register_id' => $sideRegister['id'],
+            'opening_balance' => '20.00',
+        ])->assertCreated()->json('data');
+
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'TILL-001',
+            'name' => 'Till test item',
+            'unit_price' => 10,
+            'quantity_on_hand' => 2,
+        ])->assertCreated()->json('data');
+        $sale = $this->postJson('/api/v1/sales', [
+            'cash_register_id' => $sideRegister['id'],
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertCreated()->assertJsonPath('data.cash_register_id', $sideRegister['id'])->json('data');
+
+        $this->assertDatabaseHas('cash_register_sessions', ['cash_register_id' => $defaultRegister['id'], 'expected_cash' => '10.00']);
+        $this->assertDatabaseHas('cash_register_sessions', ['cash_register_id' => $sideRegister['id'], 'expected_cash' => '30.00']);
+
+        $this->postJson("/api/v1/sales/{$sale['id']}/refunds", [
+            'reason' => 'Return at the side counter',
+            'items' => [['sale_item_id' => $sale['items'][0]['id'], 'quantity' => 1]],
+        ])->assertCreated()->assertJsonPath('data.amount', '10.00');
+        $this->assertDatabaseHas('cash_register_sessions', ['cash_register_id' => $sideRegister['id'], 'expected_cash' => '20.00']);
+        $this->assertDatabaseHas('cash_register_sessions', ['cash_register_id' => $defaultRegister['id'], 'expected_cash' => '10.00']);
+
+        $this->postJson('/api/v1/cash-registers/close', [
+            'register_id' => $sideRegister['id'],
+            'actual_cash' => '20.00',
+        ])->assertOk()->assertJsonPath('data.difference', '0.00');
+        $this->assertDatabaseHas('audit_logs', ['business_id' => $business->id, 'action' => 'cash_register.session_opened', 'entity_id' => (string) $sideSession['id']]);
+        $this->assertDatabaseHas('audit_logs', ['business_id' => $business->id, 'action' => 'cash_register.session_closed', 'entity_id' => (string) $sideSession['id']]);
+
+        $this->postJson('/api/v1/cash-registers/close', [
+            'register_id' => $defaultRegister['id'],
+            'actual_cash' => '9.99',
+        ])->assertOk()->assertJsonPath('data.difference', '-0.01');
     }
 
     public function test_checkout_applies_business_tax_settings_and_rejects_disabled_tenders(): void
@@ -460,6 +554,38 @@ class ProductInventorySalesTest extends TestCase
 
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 0]);
         $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_stock_movements_write_actor_attributed_audit_records(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'AUDIT-001',
+            'name' => 'Audit test item',
+            'unit_price' => 15,
+            'quantity_on_hand' => 4,
+        ])->assertCreated()->json('data');
+
+        $movement = $this->postJson('/api/v1/inventory/adjustments', [
+            'product_id' => $product['id'],
+            'quantity_change' => -1,
+            'reason' => 'Counted damaged unit',
+        ])->assertCreated()->json('data');
+
+        $this->assertDatabaseHas('audit_logs', [
+            'business_id' => $business->id,
+            'user_id' => $user->id,
+            'action' => 'inventory.stock_movement_recorded',
+            'entity_type' => StockMovement::class,
+            'entity_id' => (string) $movement['id'],
+        ]);
+        $auditLog = DB::table('audit_logs')
+            ->where('entity_type', StockMovement::class)
+            ->where('entity_id', (string) $movement['id'])
+            ->first();
+        $this->assertSame(-1, json_decode($auditLog->new_values, true, flags: JSON_THROW_ON_ERROR)['quantity_change']);
+        $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 3]);
     }
 
     public function test_shared_barcode_product_stock_can_be_adjusted_up_and_down_by_quantity_change(): void

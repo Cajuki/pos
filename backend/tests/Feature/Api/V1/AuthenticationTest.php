@@ -341,6 +341,10 @@ class AuthenticationTest extends TestCase
             'timezone' => 'Africa/Nairobi',
             'settings' => [],
         ])->assertForbidden();
+        $this->postJson('/api/v1/cash-registers', [
+            'name' => 'Unapproved till',
+            'code' => 'UNAPPROVED',
+        ])->assertForbidden();
         $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
         $this->assertDatabaseCount('products', 0);
     }

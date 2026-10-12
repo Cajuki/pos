@@ -115,7 +115,7 @@ export default function LandingPage() {
               </h1>
 
               <p className="mt-6 max-w-xl text-lg text-graphite/75 leading-relaxed">
-                The modern point-of-sale platform built for small and medium-sized businesses. Fast cashier checkout, audited stock ledger, customer store credit, M-Pesa settlements, and analytics.
+                The modern point-of-sale platform built for small and medium-sized businesses. Fast checkout, traceable stock movements, customer credit records, and clear business reporting.
               </p>
 
               <div className="mt-8 flex flex-wrap items-center gap-4">

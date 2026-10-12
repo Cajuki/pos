@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BusinessController;
 use App\Http\Controllers\Api\V1\CashRegisterController;
 use App\Http\Controllers\Api\V1\CategoryController;
@@ -15,6 +16,7 @@ use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RestaurantOrderController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SupplierController;
+use App\Http\Controllers\Api\V1\WarehouseController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
@@ -57,6 +59,12 @@ Route::prefix('v1')->group(function (): void {
         Route::get('/business/current', [AuthController::class, 'currentBusiness'])
             ->middleware('business')->name('api.v1.business.current');
         Route::middleware(['business', 'business.permission'])->group(function (): void {
+            Route::get('/branches', [BranchController::class, 'index'])->name('api.v1.branches.index');
+            Route::post('/branches', [BranchController::class, 'store'])->name('api.v1.branches.store');
+            Route::patch('/branches/{branch}', [BranchController::class, 'update'])->name('api.v1.branches.update');
+            Route::get('/warehouses', [WarehouseController::class, 'index'])->name('api.v1.warehouses.index');
+            Route::post('/warehouses', [WarehouseController::class, 'store'])->name('api.v1.warehouses.store');
+
             Route::get('/business/staff', [BusinessController::class, 'staff'])->name('api.v1.business.staff.index');
             Route::get('/business/providers', [BusinessController::class, 'providers'])->name('api.v1.business.providers.index');
             Route::post('/business/staff', [BusinessController::class, 'addStaff'])->name('api.v1.business.staff.store');
@@ -107,6 +115,8 @@ Route::prefix('v1')->group(function (): void {
 
             // Cash Registers
             Route::get('/cash-registers/current', [CashRegisterController::class, 'current'])->name('api.v1.cash-registers.current');
+            Route::get('/cash-registers', [CashRegisterController::class, 'index'])->name('api.v1.cash-registers.index');
+            Route::post('/cash-registers', [CashRegisterController::class, 'store'])->name('api.v1.cash-registers.store');
             Route::post('/cash-registers/open', [CashRegisterController::class, 'open'])->name('api.v1.cash-registers.open');
             Route::post('/cash-registers/close', [CashRegisterController::class, 'close'])->name('api.v1.cash-registers.close');
 

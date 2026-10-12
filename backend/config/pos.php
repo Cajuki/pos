@@ -29,6 +29,11 @@ return [
         'sales.read',
         'sales.create',
         'sales.refund',
+        'registers.manage',
+        'branches.read',
+        'branches.manage',
+        'warehouses.read',
+        'warehouses.manage',
         'customers.read',
         'customers.manage',
         'suppliers.read',
@@ -46,8 +51,8 @@ return [
         'admin' => '*',
         'manager' => '*',
         'platform_admin' => '*',
-        'cashier' => ['products.read', 'inventory.read', 'sales.read', 'sales.create', 'customers.read', 'customers.manage', 'reports.read', 'settings.read'],
-        'inventory' => ['products.read', 'products.manage', 'inventory.read', 'inventory.manage', 'suppliers.read', 'suppliers.manage', 'purchases.read', 'purchases.manage'],
+        'cashier' => ['products.read', 'inventory.read', 'sales.read', 'sales.create', 'customers.read', 'customers.manage', 'reports.read', 'settings.read', 'branches.read', 'warehouses.read'],
+        'inventory' => ['products.read', 'products.manage', 'inventory.read', 'inventory.manage', 'suppliers.read', 'suppliers.manage', 'purchases.read', 'purchases.manage', 'branches.read', 'warehouses.read', 'warehouses.manage'],
     ],
     'plans' => [
         'starter' => [

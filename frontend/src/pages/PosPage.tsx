@@ -14,18 +14,20 @@ import {
   RefreshCw,
   Search,
   Smartphone,
-  Store,
   Tag,
   Trash2,
   WalletCards,
   X,
+  PlusCircle,
 } from 'lucide-react'
-import { useDeferredValue, useState, type KeyboardEvent } from 'react'
+import { useDeferredValue, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   closeCashRegister,
+  createCashRegister,
   createSale,
   getCustomers,
   getCashRegisterStatus,
+  getCashRegisters,
   getCategories,
   getBusinessSettings,
   getProductByBarcode,
@@ -46,7 +48,7 @@ const paymentOptions = [
   { value: 'credit', label: 'Credit', icon: Clock3 },
 ] as const
 
-export default function PosPage() {
+export default function PosPage({ canManageRegisters }: { canManageRegisters: boolean }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [scanMessage, setScanMessage] = useState('')
@@ -66,6 +68,14 @@ export default function PosPage() {
   const [openingBalance, setOpeningBalance] = useState('')
   const [actualCash, setActualCash] = useState('')
   const [showCloseForm, setShowCloseForm] = useState(false)
+  const [showCreateRegister, setShowCreateRegister] = useState(false)
+  const [newRegisterName, setNewRegisterName] = useState('')
+  const [newRegisterCode, setNewRegisterCode] = useState('')
+  const [selectedRegisterId, setSelectedRegisterId] = useState<number | undefined>(() => {
+    const businessId = localStorage.getItem('pos_business_id') ?? 'default'
+    const storedId = localStorage.getItem(`pos_register_${businessId}`)
+    return storedId ? Number(storedId) : undefined
+  })
   const deferredSearch = useDeferredValue(search)
   const productsQuery = useQuery({
     queryKey: ['pos-products', deferredSearch],
@@ -79,7 +89,12 @@ export default function PosPage() {
     enabled: customerSearch.trim().length >= 2,
   })
   const categoriesQuery = useQuery({ queryKey: ['categories'], queryFn: getCategories })
-  const registerQuery = useQuery({ queryKey: ['cash-register'], queryFn: getCashRegisterStatus, retry: 1 })
+  const registersQuery = useQuery({ queryKey: ['cash-registers'], queryFn: getCashRegisters, retry: 1 })
+  const registerQuery = useQuery({
+    queryKey: ['cash-register', selectedRegisterId],
+    queryFn: () => getCashRegisterStatus(selectedRegisterId),
+    retry: 1,
+  })
   const checkoutMutation = useMutation({
     mutationFn: createSale,
     onSuccess: async (sale) => {
@@ -116,7 +131,10 @@ export default function PosPage() {
     mutationFn: openCashRegister,
     onSuccess: async () => {
       setOpeningBalance('')
-      await queryClient.invalidateQueries({ queryKey: ['cash-register'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cash-register'] }),
+        queryClient.invalidateQueries({ queryKey: ['cash-registers'] }),
+      ])
     },
   })
   const closeRegisterMutation = useMutation({
@@ -124,7 +142,26 @@ export default function PosPage() {
     onSuccess: async () => {
       setShowCloseForm(false)
       setActualCash('')
-      await queryClient.invalidateQueries({ queryKey: ['cash-register'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cash-register'] }),
+        queryClient.invalidateQueries({ queryKey: ['cash-registers'] }),
+      ])
+    },
+  })
+  const createRegisterMutation = useMutation({
+    mutationFn: createCashRegister,
+    onSuccess: async (registerState) => {
+      const registerId = registerState.register.id
+      const businessId = localStorage.getItem('pos_business_id') ?? 'default'
+      localStorage.setItem(`pos_register_${businessId}`, String(registerId))
+      setSelectedRegisterId(registerId)
+      setNewRegisterName('')
+      setNewRegisterCode('')
+      setShowCreateRegister(false)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cash-register'] }),
+        queryClient.invalidateQueries({ queryKey: ['cash-registers'] }),
+      ])
     },
   })
 
@@ -141,6 +178,7 @@ export default function PosPage() {
   const subtotalCents = cartLines.reduce((total, line) => total + toCents(line.product.unit_price) * line.quantity, 0)
   const itemCount = cartLines.reduce((count, line) => count + line.quantity, 0)
   const registerOpen = registerQuery.data?.is_open ?? false
+  const registerId = selectedRegisterId ?? registerQuery.data?.register.id
   const businessSettings = settingsQuery.data
   const preferences = businessSettings?.settings
   const taxRate = preferences?.tax_enabled ? Number(preferences.tax_rate) : 0
@@ -264,6 +302,7 @@ export default function PosPage() {
 
   function checkout() {
     checkoutMutation.mutate({
+      ...(registerId ? { cash_register_id: registerId } : {}),
       payment_method: paymentMethod,
       ...(paymentMethod === 'cash' ? { cash_received: (cashReceivedCents / 100).toFixed(2) } : {}),
       customer_id: selectedCustomer?.id,
@@ -298,9 +337,9 @@ export default function PosPage() {
     <section className="pos-workspace">
       <header className="pos-heading">
         <div>
-          <p className="pos-kicker">POSS · CHECKOUT</p>
-          <h1>Make a sale</h1>
-          <p className="pos-subtitle">Build a basket, choose a tender, and keep the line moving.</p>
+          <p className="pos-kicker">SELLFLUX · POINT OF SALE</p>
+          <h1>New sale</h1>
+          <p className="pos-subtitle">Find products, build an order, and check out in one place.</p>
         </div>
         <div className={`pos-shift-pill ${registerOpen ? 'is-open' : ''}`}>
           <span className="pos-shift-dot" />
@@ -342,7 +381,7 @@ export default function PosPage() {
             <div className="pos-product-grid">
               {visibleProducts.map((product) => (
                 <button key={product.id} type="button" disabled={(product.product_type === 'goods' && product.quantity_available === 0) || product.barcode_tracking_enabled} onClick={() => addProduct(product)} className="pos-product-card" title={product.barcode_tracking_enabled ? 'Scan an individual unit barcode to add this product' : undefined}>
-                  <span className="pos-product-mark"><Store size={18} /></span>
+                  <span className="pos-product-mark" aria-hidden="true">{product.name.slice(0, 1).toUpperCase()}</span>
                   <span className="pos-product-copy"><strong>{product.name}</strong><small>{product.category || product.sku}</small></span>
                   <span className="pos-product-bottom"><strong>{formatCurrency(Number(product.unit_price), currency)}</strong><small className={product.product_type === 'goods' && product.quantity_available <= product.reorder_level ? 'low-stock' : ''}>{product.product_type === 'service' ? `${product.service_duration_minutes ?? 30} min service` : `${product.quantity_available} available`}</small></span>
                   <span className="pos-add-mark"><Plus size={16} /></span>
@@ -355,6 +394,40 @@ export default function PosPage() {
         <aside className="pos-checkout">
           <div className={`pos-register-card ${registerOpen ? 'is-register-open' : ''}`}>
             <div className="pos-register-heading"><span className="pos-register-icon"><Clock3 size={17} /></span><div><strong>{registerOpen ? 'Active shift' : 'Start your shift'}</strong><small>{registerQuery.data?.register.name ?? 'Main counter'}</small></div>{registerOpen && <span className="pos-open-label">OPEN</span>}</div>
+            {registersQuery.data && registersQuery.data.length > 1 && (
+              <label className="pos-register-picker">Till
+                <select
+                  value={registerId ?? ''}
+                  disabled={cartLines.length > 0}
+                  onChange={(event) => {
+                    const nextId = Number(event.target.value)
+                    const businessId = localStorage.getItem('pos_business_id') ?? 'default'
+                    localStorage.setItem(`pos_register_${businessId}`, String(nextId))
+                    setSelectedRegisterId(nextId)
+                    setShowCloseForm(false)
+                  }}
+                >
+                  {registersQuery.data.map(({ register }) => <option value={register.id} key={register.id}>{register.name} ({register.code})</option>)}
+                </select>
+                {cartLines.length > 0 && <small>Finish or clear the sale before switching tills.</small>}
+              </label>
+            )}
+            {canManageRegisters && (
+              <button className="pos-add-register-toggle" type="button" onClick={() => setShowCreateRegister((shown) => !shown)}>
+                <PlusCircle size={14} /> {showCreateRegister ? 'Cancel adding till' : 'Add a till'}
+              </button>
+            )}
+            {showCreateRegister && canManageRegisters && (
+              <form className="pos-create-register-form" onSubmit={(event: FormEvent<HTMLFormElement>) => {
+                event.preventDefault()
+                createRegisterMutation.mutate({ name: newRegisterName, code: newRegisterCode })
+              }}>
+                <label>Till name<input required maxLength={100} value={newRegisterName} onChange={(event) => setNewRegisterName(event.target.value)} placeholder="Front counter" /></label>
+                <label>Till code<input required maxLength={40} pattern="[A-Za-z0-9-]+" value={newRegisterCode} onChange={(event) => setNewRegisterCode(event.target.value.toUpperCase())} placeholder="TILL-02" /></label>
+                {createRegisterMutation.isError && <p role="alert">Could not add this till. Check that its code is unique.</p>}
+                <button type="submit" disabled={createRegisterMutation.isPending}>{createRegisterMutation.isPending ? 'Adding till…' : 'Create till'}</button>
+              </form>
+            )}
             {registerQuery.isPending ? <p className="pos-register-message">Checking register status...</p> : registerQuery.isError ? (
               <div className="pos-register-message pos-register-error">
                 <span>Register status could not be checked. Retry before taking payment.</span>
@@ -364,7 +437,7 @@ export default function PosPage() {
               </div>
             ) : registerOpen ? (
               showCloseForm ? (
-                <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); closeRegisterMutation.mutate({ actual_cash: Number(actualCash) }) }}>
+                <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); closeRegisterMutation.mutate({ actual_cash: Number(actualCash), ...(registerId ? { register_id: registerId } : {}) }) }}>
                   <label>Counted cash<input type="number" min="0" step="0.01" required value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder="0.00" /></label>
                   {closeRegisterMutation.isError && <p role="alert">Could not close this shift. Check the counted amount and retry.</p>}
                   <div><button type="button" className="pos-cancel-button" onClick={() => setShowCloseForm(false)}>Cancel</button><button type="submit" disabled={closeRegisterMutation.isPending || cartLines.length > 0}>{closeRegisterMutation.isPending ? 'Closing...' : 'Close shift'}</button></div>
@@ -374,7 +447,7 @@ export default function PosPage() {
                 <div className="pos-register-active"><span>Float {formatCurrency(Number(registerQuery.data?.current_session?.opening_balance ?? '0'), currency)}</span><button type="button" onClick={() => setShowCloseForm(true)} disabled={cartLines.length > 0}>Close shift <ChevronRight size={14} /></button></div>
               )
             ) : (
-              <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0) }) }}>
+              <form className="pos-register-form" onSubmit={(event) => { event.preventDefault(); openRegisterMutation.mutate({ opening_balance: Number(openingBalance || 0), ...(registerId ? { register_id: registerId } : {}) }) }}>
                 <label>Opening float<input type="number" min="0" step="0.01" required value={openingBalance} onChange={(event) => setOpeningBalance(event.target.value)} placeholder="0.00" /></label>
                 {openRegisterMutation.isError && <p role="alert">Could not open the register. Please retry.</p>}
                 <button type="submit" disabled={openRegisterMutation.isPending}>{openRegisterMutation.isPending ? 'Opening...' : 'Open register'} <ChevronRight size={14} /></button>
@@ -383,7 +456,7 @@ export default function PosPage() {
           </div>
 
           <div className="pos-cart-heading">
-            <div><p className="pos-kicker">CURRENT ORDER</p><h2>Basket <span>{itemCount}</span></h2></div>
+            <div><p className="pos-kicker">CURRENT ORDER</p><h2>Sale details <span>{itemCount}</span></h2></div>
             {cartLines.length > 0 && <button className="pos-clear-button" type="button" onClick={() => { setCart({}); setCartBarcodes({}); setReceipt(null) }}>Clear all</button>}
           </div>
 
@@ -517,10 +590,15 @@ export default function PosPage() {
                 </button>
               ))}
             </fieldset>
+            {['mpesa', 'card', 'bank'].includes(paymentMethod) && (
+              <p className="pos-manual-tender-note" role="note">
+                Confirm this payment in your provider or bank account before recording it. SellFlux does not initiate or verify this payment yet.
+              </p>
+            )}
             {settingsQuery.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Checkout settings could not be loaded. Refresh before taking payment.</div>}
             {checkoutMutation.isError && <div role="alert" className="pos-alert pos-checkout-alert"><CircleAlert size={16} /> Sale failed. Check stock, register status, and enabled payment methods, then try again.</div>}
             <button className="pos-charge-button" type="button" disabled={!cartLines.length || checkoutMutation.isPending || !registerOpen || settingsQuery.isPending || settingsQuery.isError || !enabledPaymentMethods.includes(paymentMethod) || !cashPaymentIsValid} onClick={checkout}>
-              <span>{checkoutMutation.isPending ? 'Processing sale...' : paymentMethod === 'credit' ? 'Record credit sale' : 'Charge customer'}</span>
+              <span>{checkoutMutation.isPending ? 'Processing sale...' : paymentMethod === 'credit' ? 'Record credit sale' : paymentMethod === 'cash' ? 'Complete cash sale' : 'Record confirmed payment'}</span>
               <span>{checkoutMutation.isPending ? null : <>{formatCurrency(discountedTotalCents / 100, currency)} <ChevronRight size={17} /></>}</span>
             </button>
             {!registerOpen && !registerQuery.isPending && !registerQuery.isError && <p className="pos-gate-note">Open the register above before completing a sale.</p>}

@@ -17,9 +17,9 @@ type SettingsTab = typeof tabs[number]['id']
 
 const paymentOptions = [
   { value: 'cash', label: 'Cash', detail: 'Physical cash and register reconciliation' },
-  { value: 'mpesa', label: 'M-Pesa', detail: 'Mobile money payments' },
-  { value: 'card', label: 'Card', detail: 'Debit and credit card payments' },
-  { value: 'bank', label: 'Bank transfer', detail: 'Direct bank payments' },
+  { value: 'mpesa', label: 'M-Pesa', detail: 'Record after confirming payment. Daraja is not connected yet.' },
+  { value: 'card', label: 'Card', detail: 'Record after confirming payment on your card terminal.' },
+  { value: 'bank', label: 'Bank transfer', detail: 'Record after confirming funds in your bank account.' },
   { value: 'credit', label: 'Store credit', detail: 'Record a customer credit sale' },
 ] as const
 

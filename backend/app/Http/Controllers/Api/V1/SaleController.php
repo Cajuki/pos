@@ -51,6 +51,20 @@ class SaleController extends Controller
     public function store(Request $request): JsonResponse
     {
         $business = $request->attributes->get('business');
+        $idempotencyKey = $request->header('Idempotency-Key');
+        if ($idempotencyKey !== null && (trim($idempotencyKey) === '' || strlen($idempotencyKey) > 120)) {
+            throw ValidationException::withMessages(['Idempotency-Key' => 'The idempotency key must be between 1 and 120 characters.']);
+        }
+        $idempotencyHash = $idempotencyKey === null ? null : hash('sha256', json_encode(
+            $this->sortRequestData($request->all()),
+            JSON_THROW_ON_ERROR,
+        ));
+        if ($idempotencyKey !== null) {
+            $existingSale = $this->saleForIdempotencyKey($business->id, $idempotencyKey);
+            if ($existingSale) {
+                return $this->idempotencyResponse($existingSale, $idempotencyHash);
+            }
+        }
         $restaurantOrder = null;
         if ($request->filled('restaurant_order_id')) {
             $restaurantOrder = RestaurantOrder::query()
@@ -87,6 +101,7 @@ class SaleController extends Controller
             'payment_method' => ['required', 'in:cash,credit,mpesa,card,bank'],
             'cash_received' => ['sometimes', 'nullable', 'numeric', 'decimal:0,2', 'min:0', 'prohibited_unless:payment_method,cash'],
             'customer_id' => ['nullable', 'integer'],
+            'cash_register_id' => ['sometimes', 'integer', Rule::exists('cash_registers', 'id')->where('business_id', $business->id)],
             'restaurant_order_id' => ['sometimes', 'integer', Rule::exists('restaurant_orders', 'id')->where('business_id', $business->id)],
             'appointment_id' => ['sometimes', 'integer', Rule::exists('appointments', 'id')->where('business_id', $business->id)],
             'order_type' => ['sometimes', Rule::in(['dine_in', 'takeaway', 'delivery'])],
@@ -118,7 +133,7 @@ class SaleController extends Controller
             ]);
         }
 
-        $sale = DB::transaction(function () use ($business, $request, $validated, $settings, $restaurantOrder): Sale {
+        $sale = DB::transaction(function () use ($business, $request, $validated, $settings, $restaurantOrder, $idempotencyKey, $idempotencyHash): Sale {
             $lockedOrder = $restaurantOrder ? RestaurantOrder::query()
                 ->where('business_id', $business->id)
                 ->lockForUpdate()
@@ -189,11 +204,15 @@ class SaleController extends Controller
                 ->get()
                 ->groupBy('product_id');
 
-            $register = CashRegister::query()
+            $registerQuery = CashRegister::query()
                 ->where('business_id', $business->id)
-                ->where('code', 'REG-01')
-                ->where('is_active', true)
-                ->first();
+                ->where('is_active', true);
+            if (isset($validated['cash_register_id'])) {
+                $registerQuery->whereKey($validated['cash_register_id']);
+            } else {
+                $registerQuery->where('code', 'REG-01');
+            }
+            $register = $registerQuery->first();
             $session = $register ? CashRegisterSession::query()
                 ->where('business_id', $business->id)
                 ->where('cash_register_id', $register->id)
@@ -301,6 +320,7 @@ class SaleController extends Controller
             $sale = Sale::create([
                 'business_id' => $business->id,
                 'user_id' => $request->user()->id,
+                'cash_register_id' => $register->id,
                 'customer_id' => $customer?->id,
                 'receipt_number' => $receiptNumber,
                 'payment_method' => $validated['payment_method'],
@@ -314,6 +334,8 @@ class SaleController extends Controller
                 'total' => $this->fromCents($totalCents),
                 'cash_received' => $cashReceivedCents === null ? null : $this->fromCents($cashReceivedCents),
                 'change_given' => $changeGivenCents === null ? null : $this->fromCents($changeGivenCents),
+                'idempotency_key' => $idempotencyKey,
+                'idempotency_hash' => $idempotencyHash,
             ]);
 
             foreach ($items as $index => $item) {
@@ -427,7 +449,7 @@ class SaleController extends Controller
     private function saleData(Sale $sale): array
     {
         return [
-            ...$sale->only(['id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'order_type', 'table_name', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given', 'created_at']),
+            ...$sale->only(['id', 'cash_register_id', 'customer_id', 'receipt_number', 'payment_method', 'status', 'order_type', 'table_name', 'subtotal', 'discount_amount', 'tax_amount', 'tax_rate', 'total', 'cash_received', 'change_given', 'created_at']),
             'refunded_total' => (string) ($sale->refunded_total ?? '0.00'),
             'customer' => $sale->customer?->only(['id', 'name', 'phone', 'email']),
             'items' => $sale->items->map(fn ($item): array => [
@@ -442,6 +464,52 @@ class SaleController extends Controller
                 ])->all(),
             ])->all(),
         ];
+    }
+
+    private function saleForIdempotencyKey(string $businessId, string $idempotencyKey): ?Sale
+    {
+        return Sale::query()
+            ->where('business_id', $businessId)
+            ->where('idempotency_key', $idempotencyKey)
+            ->with([
+                'items' => fn ($query) => $query->withSum([
+                    'refundItems as refunded_quantity' => fn ($refundItems) => $refundItems->whereHas(
+                        'refund',
+                        fn ($refund) => $refund->where('status', 'completed'),
+                    ),
+                ], 'quantity')->with(['productBarcodes', 'batches.batch']),
+                'customer',
+            ])
+            ->withSum([
+                'refunds as refunded_total' => fn ($refunds) => $refunds->where('status', 'completed'),
+            ], 'amount')
+            ->first();
+    }
+
+    private function idempotencyResponse(Sale $sale, string $idempotencyHash): JsonResponse
+    {
+        if (! hash_equals((string) $sale->idempotency_hash, $idempotencyHash)) {
+            return response()->json([
+                'message' => 'This idempotency key was already used with a different checkout request.',
+            ], 409);
+        }
+
+        return response()->json(['data' => $this->saleData($sale)], 200);
+    }
+
+    private function sortRequestData(array $data): array
+    {
+        foreach ($data as $key => $value) {
+            if (is_array($value)) {
+                $data[$key] = $this->sortRequestData($value);
+            }
+        }
+
+        if (! array_is_list($data)) {
+            ksort($data);
+        }
+
+        return $data;
     }
 
     private function toCents(string $amount): int

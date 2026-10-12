@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Branch;
 use App\Models\Business;
+use App\Models\SubscriptionPlan;
 use App\Models\User;
+use App\Models\Warehouse;
 use App\Support\BusinessPermissions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -52,13 +55,28 @@ class AuthController extends Controller
                     'business_address' => $validated['business_address'] ?? '',
                 ],
             ]);
+            $branch = Branch::create([
+                'business_id' => $business->id,
+                'name' => 'Main Branch',
+                'code' => 'MAIN',
+                'is_default' => true,
+                'is_active' => true,
+            ]);
+            Warehouse::create([
+                'business_id' => $business->id,
+                'branch_id' => $branch->id,
+                'name' => 'Main Warehouse',
+                'code' => 'MAIN',
+                'is_default' => true,
+                'is_active' => true,
+            ]);
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
                 'password' => $validated['password'],
             ]);
             $user->businesses()->attach($business, ['role' => 'owner']);
-            $plan = \App\Models\SubscriptionPlan::query()->where('code', 'starter')->where('is_active', true)->firstOrFail();
+            $plan = SubscriptionPlan::query()->where('code', 'starter')->where('is_active', true)->firstOrFail();
             $business->subscriptions()->create([
                 'subscription_plan_id' => $plan->id,
                 'status' => 'active',

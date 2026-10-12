@@ -84,6 +84,7 @@ export interface SaleItem {
 
 export interface Sale {
   id: number
+  cash_register_id?: number
   customer_id: number | null
   customer: Pick<Customer, 'id' | 'name' | 'phone' | 'email'> | null
   receipt_number: string
@@ -253,10 +254,18 @@ export interface CashRegisterSession {
   closed_at: string | null
   closing_notes: string | null
   user?: { id: number; name: string }
+  register?: CashRegister
+}
+
+export interface CashRegister {
+  id: number
+  name: string
+  code: string
+  is_active: boolean
 }
 
 export interface CashRegisterState {
-  register: { id: number; name: string; code: string; is_active: boolean }
+  register: CashRegister
   current_session: CashRegisterSession | null
   is_open: boolean
 }
@@ -467,7 +476,10 @@ export async function getSales(): Promise<Sale[]> {
   return response.data.data
 }
 
+const checkoutIdempotencyKeys = new Map<string, string>()
+
 export async function createSale(payload: {
+  cash_register_id?: number
   payment_method: 'cash' | 'mpesa' | 'card' | 'bank' | 'credit'
   cash_received?: string
   customer_id?: number
@@ -478,7 +490,21 @@ export async function createSale(payload: {
   discount_percent?: number
   items: Array<{ product_id: number; quantity: number; barcodes?: string[]; performed_by_user_id?: number }>
 }): Promise<Sale> {
-  const response = await apiClient.post<{ data: Sale }>('/sales', payload)
+  const payloadSignature = JSON.stringify(payload)
+  let idempotencyKey = checkoutIdempotencyKeys.get(payloadSignature)
+  if (!idempotencyKey) {
+    idempotencyKey = crypto.randomUUID()
+    checkoutIdempotencyKeys.set(payloadSignature, idempotencyKey)
+    if (checkoutIdempotencyKeys.size > 100) {
+      const oldestSignature = checkoutIdempotencyKeys.keys().next().value
+      if (oldestSignature) checkoutIdempotencyKeys.delete(oldestSignature)
+    }
+  }
+
+  const response = await apiClient.post<{ data: Sale }>('/sales', payload, {
+    headers: { 'Idempotency-Key': idempotencyKey },
+  })
+  checkoutIdempotencyKeys.delete(payloadSignature)
   return response.data.data
 }
 
@@ -590,17 +616,29 @@ export async function createExpense(payload: {
 }
 
 // Cash Registers
-export async function getCashRegisterStatus(): Promise<CashRegisterState> {
-  const response = await apiClient.get<{ data: CashRegisterState }>('/cash-registers/current')
+export async function getCashRegisters(): Promise<CashRegisterState[]> {
+  const response = await apiClient.get<{ data: CashRegisterState[] }>('/cash-registers')
   return response.data.data
 }
 
-export async function openCashRegister(payload: { opening_balance: number }): Promise<CashRegisterSession> {
+export async function createCashRegister(payload: { name: string; code: string }): Promise<CashRegisterState> {
+  const response = await apiClient.post<{ data: CashRegisterState }>('/cash-registers', payload)
+  return response.data.data
+}
+
+export async function getCashRegisterStatus(registerId?: number): Promise<CashRegisterState> {
+  const response = await apiClient.get<{ data: CashRegisterState }>('/cash-registers/current', {
+    params: registerId ? { register_id: registerId } : {},
+  })
+  return response.data.data
+}
+
+export async function openCashRegister(payload: { opening_balance: number; register_id?: number }): Promise<CashRegisterSession> {
   const response = await apiClient.post<{ data: CashRegisterSession }>('/cash-registers/open', payload)
   return response.data.data
 }
 
-export async function closeCashRegister(payload: { actual_cash: number; closing_notes?: string }): Promise<CashRegisterSession> {
+export async function closeCashRegister(payload: { actual_cash: number; closing_notes?: string; register_id?: number }): Promise<CashRegisterSession> {
   const response = await apiClient.post<{ data: CashRegisterSession }>('/cash-registers/close', payload)
   return response.data.data
 }

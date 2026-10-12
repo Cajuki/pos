@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 
 /**
@@ -58,12 +59,22 @@ class Business extends Model
         return $this->hasMany(TeamInvitation::class);
     }
 
+    public function branches(): HasMany
+    {
+        return $this->hasMany(Branch::class);
+    }
+
+    public function warehouses(): HasMany
+    {
+        return $this->hasMany(Warehouse::class);
+    }
+
     public function subscriptions(): HasMany
     {
         return $this->hasMany(BusinessSubscription::class);
     }
 
-    public function activeSubscription(): \Illuminate\Database\Eloquent\Relations\HasOne
+    public function activeSubscription(): HasOne
     {
         return $this->hasOne(BusinessSubscription::class)
             ->where('status', 'active')

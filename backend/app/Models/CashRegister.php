@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['business_id', 'name', 'code', 'is_active'])]
+#[Fillable(['business_id', 'branch_id', 'name', 'code', 'is_active'])]
 class CashRegister extends Model
 {
     protected function casts(): array
@@ -26,5 +26,9 @@ class CashRegister extends Model
     {
         return $this->hasMany(CashRegisterSession::class);
     }
-}
 
+    public function branch(): BelongsTo
+    {
+        return $this->belongsTo(Branch::class);
+    }
+}
