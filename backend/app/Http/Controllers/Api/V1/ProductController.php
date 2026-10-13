@@ -63,12 +63,26 @@ class ProductController extends Controller
             'category' => ['nullable', 'string', 'max:100'],
             'product_type' => ['sometimes', Rule::in(['goods', 'service'])],
             'service_duration_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'service_buffer_minutes' => ['sometimes', 'integer', 'min:0', 'max:240'],
+            'commission_type' => ['nullable', Rule::in(['percentage', 'fixed'])],
+            'commission_value' => ['nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:9999999999.99'],
             'variant_attributes' => ['sometimes', 'nullable', 'array', 'max:10'],
             'variant_attributes.*' => ['required', 'string', 'max:120'],
             'bulk_pricing' => ['sometimes', 'nullable', 'array', 'max:20'],
             'bulk_pricing.*.minimum_quantity' => ['required', 'integer', 'min:2', 'max:100000'],
             'bulk_pricing.*.unit_price' => ['required', 'integer', 'min:0'],
             'batch_tracking_enabled' => ['sometimes', 'boolean'],
+            'brand_name' => ['nullable', 'string', 'max:255'],
+            'generic_name' => ['nullable', 'string', 'max:255'],
+            'active_ingredient' => ['nullable', 'string', 'max:255'],
+            'strength' => ['nullable', 'string', 'max:100'],
+            'dosage_form' => ['nullable', 'string', 'max:100'],
+            'pack_size' => ['nullable', 'string', 'max:100'],
+            'unit_of_sale' => ['nullable', 'string', 'max:100'],
+            'manufacturer' => ['nullable', 'string', 'max:255'],
+            'registration_number' => ['nullable', 'string', 'max:100'],
+            'medicine_classification' => ['nullable', Rule::in(['otc', 'prescription', 'controlled'])],
+            'prescription_required' => ['sometimes', 'boolean'],
             'description' => ['nullable', 'string', 'max:5000'],
             'unit_price' => ['required', 'integer', 'min:0'],
             'cost_price' => ['nullable', 'integer', 'min:0'],
@@ -89,6 +103,8 @@ class ProductController extends Controller
         if (($validated['batch_tracking_enabled'] ?? false) && ! in_array('pharmacy', $enabledModules, true)) {
             throw ValidationException::withMessages(['batch_tracking_enabled' => 'Enable the pharmacy inventory module for this business first.']);
         }
+        $this->validateMedicineFields($validated, $enabledModules);
+        $this->validateCommissionFields($validated);
         $this->validateBulkPricing($validated['bulk_pricing'] ?? [], $validated['unit_price']);
 
         if ($validated['product_type'] === 'service') {
@@ -105,9 +121,14 @@ class ProductController extends Controller
             unset($validated['barcode_tracking_enabled']);
             unset($validated['batch_tracking_enabled']);
             $validated['service_duration_minutes'] ??= 30;
+            $validated['service_buffer_minutes'] ??= 0;
         } elseif (isset($validated['service_duration_minutes'])) {
             throw ValidationException::withMessages([
                 'service_duration_minutes' => 'Duration can only be set for a service.',
+            ]);
+        } elseif (isset($validated['service_buffer_minutes'])) {
+            throw ValidationException::withMessages([
+                'service_buffer_minutes' => 'Buffer time can only be set for a service.',
             ]);
         }
 
@@ -193,11 +214,25 @@ class ProductController extends Controller
             'category' => ['sometimes', 'nullable', 'string', 'max:100'],
             'product_type' => ['sometimes', Rule::in(['goods', 'service'])],
             'service_duration_minutes' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:1440'],
+            'service_buffer_minutes' => ['sometimes', 'integer', 'min:0', 'max:240'],
+            'commission_type' => ['sometimes', 'nullable', Rule::in(['percentage', 'fixed'])],
+            'commission_value' => ['sometimes', 'nullable', 'numeric', 'decimal:0,2', 'min:0', 'max:9999999999.99'],
             'variant_attributes' => ['sometimes', 'nullable', 'array', 'max:10'],
             'variant_attributes.*' => ['required', 'string', 'max:120'],
             'bulk_pricing' => ['sometimes', 'nullable', 'array', 'max:20'],
             'bulk_pricing.*.minimum_quantity' => ['required', 'integer', 'min:2', 'max:100000'],
             'bulk_pricing.*.unit_price' => ['required', 'integer', 'min:0'],
+            'brand_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'generic_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'active_ingredient' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'strength' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'dosage_form' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'pack_size' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'unit_of_sale' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'manufacturer' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'registration_number' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'medicine_classification' => ['sometimes', 'nullable', Rule::in(['otc', 'prescription', 'controlled'])],
+            'prescription_required' => ['sometimes', 'boolean'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'unit_price' => ['sometimes', 'required', 'integer', 'min:0'],
             'cost_price' => ['sometimes', 'nullable', 'integer', 'min:0'],
@@ -207,6 +242,8 @@ class ProductController extends Controller
 
         $nextType = $validated['product_type'] ?? $record->product_type;
         $enabledModules = $business->posSettings()['enabled_modules'];
+        $this->validateMedicineFields($validated, $enabledModules, $record);
+        $this->validateCommissionFields($validated, $record);
         if (array_key_exists('variant_attributes', $validated)
             && ! empty($validated['variant_attributes'])
             && ! in_array('variants', $enabledModules, true)) {
@@ -238,9 +275,14 @@ class ProductController extends Controller
             unset($validated['barcode_tracking_enabled']);
             $validated['barcode'] = null;
             $validated['service_duration_minutes'] ??= $record->service_duration_minutes ?? 30;
+            $validated['service_buffer_minutes'] ??= $record->service_buffer_minutes ?? 0;
         } elseif (isset($validated['service_duration_minutes'])) {
             throw ValidationException::withMessages([
                 'service_duration_minutes' => 'Duration can only be set for a service.',
+            ]);
+        } elseif (isset($validated['service_buffer_minutes'])) {
+            throw ValidationException::withMessages([
+                'service_buffer_minutes' => 'Buffer time can only be set for a service.',
             ]);
         }
 
@@ -259,7 +301,7 @@ class ProductController extends Controller
     private function productData(Product $product): array
     {
         return [
-            ...$product->only(['id', 'sku', 'barcode', 'barcode_tracking_enabled', 'product_type', 'service_duration_minutes', 'variant_attributes', 'bulk_pricing', 'batch_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
+            ...$product->only(['id', 'sku', 'barcode', 'barcode_tracking_enabled', 'product_type', 'service_duration_minutes', 'service_buffer_minutes', 'commission_type', 'commission_value', 'variant_attributes', 'bulk_pricing', 'batch_tracking_enabled', 'brand_name', 'generic_name', 'active_ingredient', 'strength', 'dosage_form', 'pack_size', 'unit_of_sale', 'manufacturer', 'registration_number', 'medicine_classification', 'prescription_required', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active']),
             'quantity_on_hand' => $product->inventoryStock?->quantity_on_hand ?? 0,
             'quantity_available' => max(
                 0,
@@ -284,6 +326,41 @@ class ProductController extends Controller
                 ]);
             }
             $previousQuantity = $tier['minimum_quantity'];
+        }
+    }
+
+    private function validateMedicineFields(array $validated, array $enabledModules, ?Product $record = null): void
+    {
+        $medicineFields = [
+            'brand_name', 'generic_name', 'active_ingredient', 'strength', 'dosage_form', 'pack_size',
+            'unit_of_sale', 'manufacturer', 'registration_number', 'medicine_classification', 'prescription_required',
+        ];
+        if (array_intersect($medicineFields, array_keys($validated)) !== []
+            && ! in_array('pharmacy', $enabledModules, true)) {
+            throw ValidationException::withMessages([
+                'medicine_classification' => 'Enable the pharmacy module before setting medicine details.',
+            ]);
+        }
+        $classification = $validated['medicine_classification'] ?? $record?->medicine_classification;
+        $prescriptionRequired = $validated['prescription_required'] ?? $record?->prescription_required ?? false;
+        if (in_array($classification, ['prescription', 'controlled'], true) && ! $prescriptionRequired) {
+            throw ValidationException::withMessages([
+                'prescription_required' => 'Prescription and controlled medicines must require prescription verification.',
+            ]);
+        }
+    }
+
+    private function validateCommissionFields(array $validated, ?Product $record = null): void
+    {
+        $type = array_key_exists('commission_type', $validated) ? $validated['commission_type'] : $record?->commission_type;
+        $value = array_key_exists('commission_value', $validated) ? $validated['commission_value'] : $record?->commission_value;
+        if (($type === null) !== ($value === null)) {
+            throw ValidationException::withMessages([
+                'commission_type' => 'Set both a commission type and value, or clear both to disable commission.',
+            ]);
+        }
+        if ($type === 'percentage' && (float) $value > 100) {
+            throw ValidationException::withMessages(['commission_value' => 'Percentage commission cannot exceed 100%.']);
         }
     }
 

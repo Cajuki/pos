@@ -27,6 +27,10 @@ class Business extends Model
     public function posSettings(): array
     {
         $industryModules = config('pos.industries.'.$this->industry.'.modules', []);
+        $enabledModules = $this->settings['enabled_modules'] ?? $industryModules;
+        if ($this->industry === 'supermarket') {
+            $enabledModules = array_values(array_diff($enabledModules, ['pharmacy']));
+        }
 
         return array_replace([
             'business_phone' => '',
@@ -45,7 +49,7 @@ class Business extends Model
             'enabled_modules' => $industryModules,
             'role_permissions' => [],
         ], $this->settings ?? [], [
-            'enabled_modules' => $this->settings['enabled_modules'] ?? $industryModules,
+            'enabled_modules' => $enabledModules,
         ]);
     }
 
@@ -57,6 +61,11 @@ class Business extends Model
     public function teamInvitations(): HasMany
     {
         return $this->hasMany(TeamInvitation::class);
+    }
+
+    public function staffProfiles(): HasMany
+    {
+        return $this->hasMany(StaffProfile::class);
     }
 
     public function branches(): HasMany
@@ -86,7 +95,7 @@ class Business extends Model
     public function industryModules(): array
     {
         $industry = config('pos.industries.'.$this->industry);
-        $configuredModules = $this->settings['enabled_modules'] ?? $industry['modules'] ?? [];
+        $configuredModules = $this->posSettings()['enabled_modules'] ?? $industry['modules'] ?? [];
 
         return array_values(array_unique([
             ...config('pos.core_modules'),

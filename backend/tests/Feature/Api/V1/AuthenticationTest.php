@@ -19,6 +19,7 @@ class AuthenticationTest extends TestCase
     {
         $response = $this->postJson('/api/v1/auth/register-business', [
             'business_name' => 'Demo Retail Ltd',
+            'industry' => 'general',
             'name' => 'Amina Mwangi',
             'email' => 'amina@example.test',
             'password' => 'Correct-horse-2026!',
@@ -36,6 +37,16 @@ class AuthenticationTest extends TestCase
         $this->assertDatabaseHas('business_subscriptions', [
             'business_id' => $response->json('data.business.id'),
             'status' => 'active',
+        ]);
+        $this->assertDatabaseHas('branches', [
+            'business_id' => $response->json('data.business.id'),
+            'code' => 'MAIN',
+            'is_default' => true,
+        ]);
+        $this->assertDatabaseHas('warehouses', [
+            'business_id' => $response->json('data.business.id'),
+            'code' => 'MAIN',
+            'is_default' => true,
         ]);
     }
 
@@ -85,6 +96,7 @@ class AuthenticationTest extends TestCase
     {
         $this->postJson('/api/v1/auth/register-business', [
             'business_name' => 'Demo Retail Ltd',
+            'industry' => 'general',
             'name' => 'Amina Mwangi',
             'email' => 'amina@example.test',
             'password' => 'alllowercasepassword',
@@ -215,7 +227,7 @@ class AuthenticationTest extends TestCase
         ])->assertStatus(410);
     }
 
-    public function test_non_admin_member_cannot_manage_staff(): void
+    public function test_manager_with_staff_permission_can_invite_a_regular_team_member(): void
     {
         $manager = User::factory()->create();
         $business = Business::create(['name' => 'Staff Store']);
@@ -226,7 +238,7 @@ class AuthenticationTest extends TestCase
             'name' => 'Sam Cashier',
             'email' => 'sam@example.test',
             'role' => 'cashier',
-        ])->assertForbidden();
+        ])->assertAccepted()->assertJsonPath('data.role', 'cashier');
 
         $this->assertDatabaseCount('users', 1);
     }
@@ -347,6 +359,27 @@ class AuthenticationTest extends TestCase
         ])->assertForbidden();
         $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
         $this->assertDatabaseCount('products', 0);
+    }
+
+    public function test_supermarket_industry_cannot_be_changed_in_settings_or_enable_pharmacy_workflows(): void
+    {
+        $owner = User::factory()->create();
+        $business = Business::create(['name' => 'Market', 'industry' => 'supermarket']);
+        $business->settings = ['enabled_modules' => ['pharmacy', 'variants', 'wholesale']];
+        $business->save();
+        $owner->businesses()->attach($business, ['role' => 'owner']);
+        $this->actingAs($owner, 'sanctum')->withHeader('X-Business-ID', $business->id);
+
+        $this->getJson('/api/v1/business/settings')->assertOk()
+            ->assertJsonMissing(['pharmacy'])
+            ->assertJsonPath('data.industry', 'supermarket');
+        $this->putJson('/api/v1/business/settings', [
+            'name' => 'Market', 'industry' => 'pharmacy', 'currency' => 'KES', 'timezone' => 'Africa/Nairobi',
+            'settings' => $business->posSettings(),
+        ])->assertOk()->assertJsonPath('data.industry', 'supermarket');
+        $this->assertDatabaseHas('businesses', ['id' => $business->id, 'industry' => 'supermarket']);
+        $this->assertNotContains('pharmacy', $business->fresh()->posSettings()['enabled_modules']);
+        $this->assertNotContains('pharmacy', $business->fresh()->industryModules());
     }
 
     public function test_business_owners_can_define_least_privilege_custom_roles(): void

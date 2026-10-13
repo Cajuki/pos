@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\CashRegister;
 use App\Models\CashRegisterSession;
+use App\Models\CommissionAdjustment;
+use App\Models\CommissionEntry;
 use App\Models\InventoryBatch;
 use App\Models\InventoryStock;
 use App\Models\Product;
@@ -162,12 +164,44 @@ class RefundController extends Controller
                 $product = $line['product'];
                 $quantity = $line['quantity'];
                 $amountCents = $line['amount_cents'];
-                $refund->items()->create([
+                $refundItem = $refund->items()->create([
                     'sale_item_id' => $item->id,
                     'quantity' => $quantity,
                     'unit_amount' => number_format($amountCents / $quantity / 100, 4, '.', ''),
                     'line_amount' => $this->fromCents($amountCents),
                 ]);
+
+                $commission = CommissionEntry::query()
+                    ->where('business_id', $business->id)
+                    ->where('sale_item_id', $item->id)
+                    ->lockForUpdate()
+                    ->first();
+                if ($commission) {
+                    $earnedCents = $this->toCents((string) $commission->earned_amount);
+                    $reversedCents = $this->toCents((string) $commission->reversed_amount);
+                    $totalRefundedQuantity = $line['prior_quantity'] + $quantity;
+                    $targetReversalCents = $totalRefundedQuantity >= $item->quantity
+                        ? $earnedCents
+                        : intdiv(($earnedCents * $totalRefundedQuantity) + intdiv($item->quantity, 2), $item->quantity);
+                    $adjustmentCents = max(0, $targetReversalCents - $reversedCents);
+                    if ($adjustmentCents > 0) {
+                        CommissionAdjustment::create([
+                            'business_id' => $business->id,
+                            'commission_entry_id' => $commission->id,
+                            'refund_id' => $refund->id,
+                            'refund_item_id' => $refundItem->id,
+                            'created_by' => $request->user()->id,
+                            'amount' => $this->fromCents($adjustmentCents),
+                            'reason' => 'Commission reversal for refund '.$refund->reference_number,
+                        ]);
+                        $commission->update([
+                            'reversed_amount' => $this->fromCents($targetReversalCents),
+                            'status' => $targetReversalCents >= $earnedCents && $commission->status !== 'paid'
+                                ? 'reversed'
+                                : $commission->status,
+                        ]);
+                    }
+                }
 
                 if ($product->product_type !== 'goods') {
                     continue;

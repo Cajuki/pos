@@ -22,7 +22,10 @@ class EnsureBusinessPermission
         }
         $module = match (true) {
             str_contains($path, 'appointments') => 'appointments',
-            str_contains($path, 'restaurant-orders') => 'restaurant',
+            str_contains($path, 'salon/staff'), str_contains($path, 'salon/job-titles') => 'appointments',
+            str_contains($path, 'staff-schedules') => 'appointments',
+            str_contains($path, 'commissions') => 'appointments',
+            str_contains($path, 'restaurant-orders'), str_contains($path, 'restaurant/tables') => 'restaurant',
             default => null,
         };
 
@@ -38,7 +41,7 @@ class EnsureBusinessPermission
 
     private function permissionFor(Request $request, string $path): ?string
     {
-        if (str_contains($path, 'staff')) {
+        if (str_contains($path, 'staff') || str_contains($path, 'salon/job-titles')) {
             return 'staff.manage';
         }
 
@@ -82,7 +85,19 @@ class EnsureBusinessPermission
             return 'appointments.manage';
         }
 
+        if (str_contains($path, 'staff-schedules')) {
+            return 'appointments.manage';
+        }
+
+        if (str_contains($path, 'commissions')) {
+            return $request->isMethod('get') ? 'commissions.read' : 'commissions.manage';
+        }
+
         if (str_contains($path, 'restaurant-orders')) {
+            return 'restaurant.manage';
+        }
+
+        if (str_contains($path, 'restaurant/tables')) {
             return 'restaurant.manage';
         }
 

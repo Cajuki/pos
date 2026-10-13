@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BadgeCheck, Building2, CircleAlert, CreditCard, FileText, SlidersHorizontal } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { getBusinessIndustries } from '../api/auth'
 import { getBusinessSettings, updateBusinessSettings, type BusinessSettings } from '../api/commerce'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -56,7 +55,6 @@ export default function SettingsPage() {
 
 function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings }) {
   const queryClient = useQueryClient()
-  const industriesQuery = useQuery({ queryKey: ['business-industries'], queryFn: getBusinessIndustries })
   const [activeTab, setActiveTab] = useState<SettingsTab>('business')
   const [draft, setDraft] = useState(initialSettings)
   const [newRole, setNewRole] = useState('')
@@ -158,15 +156,15 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
       </div>
 
         <form id="business-settings-form" onSubmit={submitSettings} className="grid min-w-0 items-start gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
-          <Card className="min-w-0 bg-graphite p-2">
-            <nav aria-label="Settings sections" className="grid grid-cols-2 gap-1 sm:grid-cols-4 xl:grid-cols-1">
+          <Card className="settings-tabs-card min-w-0 p-2">
+            <nav aria-label="Settings sections" className="settings-tabs-nav grid grid-cols-2 gap-1 sm:grid-cols-4 xl:grid-cols-1">
               {tabs.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
                   type="button"
                   onClick={() => setActiveTab(id)}
                   aria-current={activeTab === id ? 'page' : undefined}
-                  className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-3 text-left text-xs font-medium transition-colors sm:gap-3 sm:px-3 sm:text-sm ${activeTab === id ? 'bg-white/15 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'}`}
+                  className={`settings-tab flex min-w-0 items-center gap-2 rounded-lg px-2 py-3 text-left text-xs font-medium transition-colors sm:gap-3 sm:px-3 sm:text-sm ${activeTab === id ? 'settings-tab-active' : ''}`}
                 >
                   <Icon size={17} />{label}
                 </button>
@@ -180,17 +178,7 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
                 <SectionHeading title="Business profile" description="Business details are used across your workspace and customer receipts." />
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   <label className={labelClass}>Business name<input required maxLength={160} className={fieldClass} value={draft.name} onChange={(event) => updateDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-                  <label className={labelClass}>Industry<select className={fieldClass} value={draft.industry} onChange={(event) => {
-                    const selectedIndustry = industriesQuery.data?.find((industry) => industry.key === event.target.value)
-                    if (!selectedIndustry) return
-                    updateDraft((current) => ({
-                      ...current,
-                      industry: selectedIndustry.key,
-                      module_options: selectedIndustry.modules,
-                      modules: [...new Set([...current.modules.filter((module) => !current.module_options.includes(module)), ...selectedIndustry.modules])],
-                      settings: { ...current.settings, enabled_modules: selectedIndustry.modules },
-                    }))
-                  }}>{(industriesQuery.data ?? []).map((industry) => <option key={industry.key} value={industry.key}>{industry.label}</option>)}</select></label>
+                  <div className={labelClass}>Business type<div className={`${fieldClass} flex min-h-11 items-center bg-graphite/[0.03] capitalize`}>{draft.industry.replaceAll('_', ' ')}</div><span className="text-xs font-normal text-graphite/55">Selected during workspace creation.</span></div>
                   <label className={labelClass}>Currency<select className={fieldClass} value={draft.currency} onChange={(event) => updateDraft((current) => ({ ...current, currency: event.target.value }))}>{currencies.map(([code, label]) => <option key={code} value={code}>{code} · {label}</option>)}</select></label>
                   <label className={labelClass}>Time zone<select className={fieldClass} value={draft.timezone} onChange={(event) => updateDraft((current) => ({ ...current, timezone: event.target.value }))}>
                     {['Africa/Nairobi', 'Africa/Kampala', 'Africa/Dar_es_Salaam', 'Africa/Kigali', 'Africa/Johannesburg', 'UTC', 'Europe/London', 'America/New_York'].map((zone) => <option key={zone} value={zone}>{zone.replaceAll('_', ' ')}</option>)}
@@ -219,7 +207,7 @@ function SettingsEditor({ initialSettings }: { initialSettings: BusinessSettings
                     {Object.entries(draft.settings.role_permissions).map(([role, permissions]) => <div key={role} className="rounded-lg border border-graphite/10 p-4">
                       <h3 className="text-sm font-semibold capitalize text-graphite">{role.replaceAll('_', ' ').replaceAll('-', ' ')}</h3>
                       <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {['products.read', 'products.manage', 'inventory.read', 'inventory.manage', 'sales.read', 'sales.create', 'sales.refund', 'customers.read', 'customers.manage', 'suppliers.read', 'suppliers.manage', 'purchases.read', 'purchases.manage', 'expenses.read', 'expenses.manage', 'reports.read', 'restaurant.manage', 'appointments.manage'].map((permission) => <label key={permission} className="flex items-center gap-2 text-xs text-graphite/75">
+                        {['products.read', 'products.manage', 'inventory.read', 'inventory.manage', 'sales.read', 'sales.create', 'sales.refund', 'customers.read', 'customers.manage', 'suppliers.read', 'suppliers.manage', 'purchases.read', 'purchases.manage', 'expenses.read', 'expenses.manage', 'reports.read', 'branches.read', 'branches.manage', 'warehouses.read', 'warehouses.manage', 'registers.manage', 'restaurant.manage', 'appointments.manage'].map((permission) => <label key={permission} className="flex items-center gap-2 text-xs text-graphite/75">
                           <input type="checkbox" checked={permissions.includes(permission)} onChange={() => toggleRolePermission(role, permission)} className="h-4 w-4 accent-lime-dark" />
                           {permission.replaceAll('.', ' ').replaceAll('_', ' ')}
                         </label>)}

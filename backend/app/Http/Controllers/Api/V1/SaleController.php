@@ -6,13 +6,16 @@ use App\Http\Controllers\Controller;
 use App\Models\Appointment;
 use App\Models\CashRegister;
 use App\Models\CashRegisterSession;
+use App\Models\CommissionEntry;
 use App\Models\Customer;
 use App\Models\InventoryBatch;
 use App\Models\InventoryStock;
 use App\Models\Product;
 use App\Models\ProductBarcode;
 use App\Models\RestaurantOrder;
+use App\Models\RestaurantTable;
 use App\Models\Sale;
+use App\Models\StaffProfile;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -225,11 +228,30 @@ class SaleController extends Controller
                     'cash_register' => 'Open the cash register before recording a sale.',
                 ]);
             }
+            if ($appointment?->branch_id && $register->branch_id !== $appointment->branch_id) {
+                throw ValidationException::withMessages(['appointment_id' => 'Charge this appointment at a till in the same branch.']);
+            }
+            if ($lockedOrder?->restaurant_table_id) {
+                $table = RestaurantTable::query()
+                    ->where('business_id', $business->id)
+                    ->whereKey($lockedOrder->restaurant_table_id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                if ($register->branch_id !== $table->branch_id) {
+                    throw ValidationException::withMessages(['restaurant_order_id' => 'Settle this table order at a till in the same branch.']);
+                }
+            }
 
             $subtotalCents = 0;
             foreach ($items as $index => $item) {
                 $product = $products->get($item['product_id']);
                 $stock = $stocks->get($item['product_id']);
+
+                if ($product->prescription_required) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.product_id" => "{$product->name} requires professional prescription verification before dispensing.",
+                    ]);
+                }
 
                 if ($product->product_type === 'goods'
                     && ($lockedOrder
@@ -357,6 +379,39 @@ class SaleController extends Controller
                     'line_total' => $this->fromCents($lineTotalCents),
                     'performed_by_user_id' => $appointment?->staff_user_id ?? ($item['performed_by_user_id'] ?? null),
                 ]);
+                $commissionStaffId = $appointment?->staff_user_id ?? ($item['performed_by_user_id'] ?? null);
+                $staffProfile = $appointment?->staffProfile;
+                if (! $staffProfile && $commissionStaffId) {
+                    $staffProfile = StaffProfile::query()->where('business_id', $business->id)->where('user_id', $commissionStaffId)->first();
+                }
+                $commissionType = $staffProfile?->commission_type ?? $product->commission_type;
+                $commissionValue = $staffProfile?->commission_value ?? $product->commission_value;
+                if ($product->product_type === 'goods' && $staffProfile?->product_commission_enabled) {
+                    $commissionType = 'percentage';
+                    $commissionValue = $staffProfile->product_commission_value;
+                }
+                if ($sale->status === 'paid' && ($commissionStaffId || $staffProfile) && $commissionType
+                    && $this->toCents((string) $commissionValue) > 0) {
+                    $discountBasisPoints = $this->toCents((string) ($validated['discount_percent'] ?? '0'));
+                    $commissionBasisCents = intdiv(($lineTotalCents * (10000 - $discountBasisPoints)) + 5000, 10000);
+                    $commissionCents = $commissionType === 'percentage'
+                        ? intdiv(($commissionBasisCents * $this->toCents((string) $commissionValue)) + 5000, 10000)
+                        : $this->toCents((string) $commissionValue) * $item['quantity'];
+                    if ($commissionCents > 0) {
+                        CommissionEntry::create([
+                            'business_id' => $business->id,
+                            'branch_id' => $register->branch_id,
+                            'sale_id' => $sale->id,
+                            'sale_item_id' => $saleItem->id,
+                            'staff_user_id' => $commissionStaffId,
+                            'staff_profile_id' => $staffProfile?->id,
+                            'basis_amount' => $this->fromCents($commissionBasisCents),
+                            'earned_amount' => $this->fromCents($commissionCents),
+                            'reversed_amount' => '0.00',
+                            'status' => 'pending',
+                        ]);
+                    }
+                }
                 if (! empty($item['barcodes'])) {
                     ProductBarcode::query()
                         ->where('business_id', $business->id)
@@ -410,6 +465,13 @@ class SaleController extends Controller
 
             if ($lockedOrder) {
                 $lockedOrder->update(['status' => 'paid', 'sale_id' => $sale->id]);
+                if ($lockedOrder->restaurant_table_id) {
+                    RestaurantTable::query()
+                        ->where('business_id', $business->id)
+                        ->whereKey($lockedOrder->restaurant_table_id)
+                        ->lockForUpdate()
+                        ->update(['status' => 'cleaning']);
+                }
             }
             if ($appointment) {
                 $appointment->update(['status' => 'completed', 'sale_id' => $sale->id]);

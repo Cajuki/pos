@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 /**
  * @property-read int $id
  */
-#[Fillable(['business_id', 'sku', 'barcode', 'barcode_tracking_enabled', 'product_type', 'service_duration_minutes', 'variant_attributes', 'bulk_pricing', 'batch_tracking_enabled', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
+#[Fillable(['business_id', 'sku', 'barcode', 'barcode_tracking_enabled', 'product_type', 'service_duration_minutes', 'service_buffer_minutes', 'commission_type', 'commission_value', 'variant_attributes', 'bulk_pricing', 'batch_tracking_enabled', 'brand_name', 'generic_name', 'active_ingredient', 'strength', 'dosage_form', 'pack_size', 'unit_of_sale', 'manufacturer', 'registration_number', 'medicine_classification', 'prescription_required', 'name', 'category', 'description', 'unit_price', 'cost_price', 'reorder_level', 'is_active'])]
 class Product extends Model
 {
     protected function casts(): array
@@ -23,9 +23,12 @@ class Product extends Model
             'is_active' => 'boolean',
             'barcode_tracking_enabled' => 'boolean',
             'service_duration_minutes' => 'integer',
+            'service_buffer_minutes' => 'integer',
+            'commission_value' => 'decimal:2',
             'variant_attributes' => 'array',
             'bulk_pricing' => 'array',
             'batch_tracking_enabled' => 'boolean',
+            'prescription_required' => 'boolean',
         ];
     }
 

@@ -19,7 +19,7 @@ export function Button({
   ...props
 }: ButtonProps) {
   const variants: Record<ButtonVariant, string> = {
-    primary: 'bg-lime text-graphite hover:bg-[#a8e83b] active:scale-[0.98] shadow-sm font-bold',
+    primary: 'bg-lime text-graphite hover:bg-lime-light active:scale-[0.98] shadow-sm font-bold',
     dark: 'bg-graphite text-champagne hover:bg-graphite-light active:scale-[0.98] shadow-sm font-semibold',
     secondary: 'bg-white text-graphite border border-graphite/15 hover:bg-champagne-light/70 active:scale-[0.98]',
     outline: 'border border-graphite/20 bg-transparent text-graphite hover:bg-graphite/5',
@@ -48,4 +48,3 @@ export function Button({
     </button>
   )
 }
-

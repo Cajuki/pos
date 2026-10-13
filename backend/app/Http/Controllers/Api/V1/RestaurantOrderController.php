@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\CashRegister;
 use App\Models\InventoryStock;
 use App\Models\Product;
 use App\Models\RestaurantOrder;
+use App\Models\RestaurantTable;
 use App\Models\StockMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,7 +22,7 @@ class RestaurantOrderController extends Controller
         $business = $request->attributes->get('business');
         $orders = RestaurantOrder::query()
             ->where('business_id', $business->id)
-            ->with(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price', 'sale:id,receipt_number,total'])
+            ->with(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price', 'sale:id,receipt_number,total', 'table:id,branch_id,name,area,seating_capacity,status'])
             ->latest()
             ->paginate(50);
 
@@ -38,17 +40,48 @@ class RestaurantOrderController extends Controller
     {
         $business = $request->attributes->get('business');
         $validated = $request->validate([
+            'cash_register_id' => ['sometimes', 'integer', Rule::exists('cash_registers', 'id')->where('business_id', $business->id)],
             'customer_id' => ['nullable', 'integer', Rule::exists('customers', 'id')->where('business_id', $business->id)],
             'order_type' => ['required', Rule::in(['dine_in', 'takeaway', 'delivery'])],
-            'table_name' => ['nullable', 'string', 'max:80', 'required_if:order_type,dine_in'],
+            'restaurant_table_id' => ['nullable', 'integer', Rule::exists('restaurant_tables', 'id')->where('business_id', $business->id)],
+            'table_name' => ['nullable', 'string', 'max:80'],
             'notes' => ['nullable', 'string', 'max:2000'],
             'items' => ['required', 'array', 'min:1', 'max:100'],
             'items.*.product_id' => ['required', 'integer', 'distinct', Rule::exists('products', 'id')->where('business_id', $business->id)],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:100000'],
             'items.*.notes' => ['nullable', 'string', 'max:500'],
         ]);
+        if ($validated['order_type'] === 'dine_in' && empty($validated['restaurant_table_id']) && empty($validated['table_name'])) {
+            throw ValidationException::withMessages(['restaurant_table_id' => 'Select an available table or provide a table label.']);
+        }
+        if ($validated['order_type'] !== 'dine_in' && ! empty($validated['restaurant_table_id'])) {
+            throw ValidationException::withMessages(['restaurant_table_id' => 'Only dine-in orders can occupy a restaurant table.']);
+        }
 
         $order = DB::transaction(function () use ($business, $request, $validated): RestaurantOrder {
+            $table = null;
+            if (! empty($validated['restaurant_table_id'])) {
+                $table = RestaurantTable::query()
+                    ->where('business_id', $business->id)
+                    ->where('is_active', true)
+                    ->lockForUpdate()
+                    ->findOrFail($validated['restaurant_table_id']);
+                if ($table->status !== 'available') {
+                    throw ValidationException::withMessages(['restaurant_table_id' => 'This table is not available for a new order.']);
+                }
+                $registerQuery = CashRegister::query()
+                    ->where('business_id', $business->id)
+                    ->where('is_active', true);
+                if (isset($validated['cash_register_id'])) {
+                    $registerQuery->whereKey($validated['cash_register_id']);
+                } else {
+                    $registerQuery->where('code', 'REG-01');
+                }
+                $register = $registerQuery->lockForUpdate()->first();
+                if (! $register || $register->branch_id !== $table->branch_id) {
+                    throw ValidationException::withMessages(['restaurant_table_id' => 'Choose a till from the same branch as the selected table.']);
+                }
+            }
             $items = collect($validated['items'])->sortBy('product_id')->values();
             $products = Product::query()
                 ->where('business_id', $business->id)
@@ -100,10 +133,11 @@ class RestaurantOrderController extends Controller
 
             $order = RestaurantOrder::create([
                 'business_id' => $business->id,
+                'restaurant_table_id' => $table?->id,
                 'customer_id' => $validated['customer_id'] ?? null,
                 'created_by' => $request->user()->id,
                 'order_type' => $validated['order_type'],
-                'table_name' => $validated['table_name'] ?? null,
+                'table_name' => $table?->name ?? ($validated['table_name'] ?? null),
                 'status' => 'open',
                 'notes' => $validated['notes'] ?? null,
             ]);
@@ -120,8 +154,9 @@ class RestaurantOrderController extends Controller
                     $stocks->get($product->id)->increment('quantity_reserved', $item['quantity']);
                 }
             }
+            $table?->update(['status' => 'occupied']);
 
-            return $order->load(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price']);
+            return $order->load(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price', 'table:id,branch_id,name,area,seating_capacity,status']);
         });
 
         return response()->json(['data' => $order], 201);
@@ -174,11 +209,18 @@ class RestaurantOrderController extends Controller
                         'reason' => "Cancelled restaurant order {$record->id}; released {$item->quantity} reserved units",
                     ]);
                 }
+                if ($record->restaurant_table_id) {
+                    RestaurantTable::query()
+                        ->where('business_id', $business->id)
+                        ->whereKey($record->restaurant_table_id)
+                        ->lockForUpdate()
+                        ->update(['status' => 'cleaning']);
+                }
             }
 
             $record->update(['status' => $validated['status']]);
 
-            return $record->load(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price', 'sale:id,receipt_number,total']);
+            return $record->load(['customer:id,name', 'items.product:id,sku,name,product_type,unit_price', 'sale:id,receipt_number,total', 'table:id,branch_id,name,area,seating_capacity,status']);
         });
 
         return response()->json(['data' => $record]);

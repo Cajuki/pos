@@ -10,9 +10,23 @@ export interface Product {
   barcode_tracking_enabled: boolean
   product_type: 'goods' | 'service'
   service_duration_minutes: number | null
+  service_buffer_minutes?: number
+  commission_type?: 'percentage' | 'fixed' | null
+  commission_value?: string | null
   variant_attributes?: Record<string, string> | null
   bulk_pricing?: Array<{ minimum_quantity: number; unit_price: number }> | null
   batch_tracking_enabled: boolean
+  brand_name?: string | null
+  generic_name?: string | null
+  active_ingredient?: string | null
+  strength?: string | null
+  dosage_form?: string | null
+  pack_size?: string | null
+  unit_of_sale?: string | null
+  manufacturer?: string | null
+  registration_number?: string | null
+  medicine_classification?: 'otc' | 'prescription' | 'controlled' | null
+  prescription_required?: boolean
   description: string | null
   unit_price: string
   cost_price: string | null
@@ -148,19 +162,57 @@ export interface BusinessSettings {
 
 export interface Appointment {
   id: number
+  staff_user_id: number | null
+  staff_profile_id: number | null
+  branch_id: number | null
   starts_at: string
   duration_minutes: number
+  buffer_minutes: number
+  booking_source: 'appointment' | 'walk_in'
+  checked_in_at: string | null
   status: 'booked' | 'in_progress' | 'completed' | 'cancelled' | 'no_show'
   notes: string | null
   customer: Pick<Customer, 'id' | 'name' | 'phone'> | null
   service: Pick<Product, 'id' | 'name' | 'unit_price'>
-  staff: { id: number; name: string }
+  staff: { id: number; name: string } | null
+  staff_profile?: { id: number; name: string } | null
+}
+
+export interface StaffSchedule {
+  id: number
+  branch_id: number
+  staff_user_id: number
+  staff_profile_id?: number | null
+  day_of_week: number
+  is_working: boolean
+  starts_at: string
+  ends_at: string
+  break_starts_at: string | null
+  break_ends_at: string | null
+}
+
+export interface CommissionEntry {
+  id: number
+  staff_user_id: number
+  basis_amount: string
+  earned_amount: string
+  reversed_amount: string
+  status: 'pending' | 'approved' | 'paid' | 'reversed'
+  paid_at: string | null
+  payout_reference: string | null
+  created_at: string
+  staff: { id: number; name: string } | null
+  staff_profile?: { id: number; name: string } | null
+  sale: { id: number; receipt_number: string; created_at: string }
+  sale_item: { id: number; product_name: string; quantity: number; line_total: string }
 }
 
 export interface RestaurantOrder {
   id: number
+  restaurant_table_id?: number | null
   order_type: 'dine_in' | 'takeaway' | 'delivery'
   table_name: string | null
+  table?: RestaurantTable | null
   status: 'open' | 'preparing' | 'ready' | 'served' | 'paid' | 'cancelled'
   notes: string | null
   customer: Pick<Customer, 'id' | 'name'> | null
@@ -174,6 +226,24 @@ export interface RestaurantOrder {
   }>
   sale: Pick<Sale, 'id' | 'receipt_number' | 'total'> | null
   created_at: string
+}
+
+export interface RestaurantTable {
+  id: number
+  branch_id: number
+  name: string
+  area: string | null
+  seating_capacity: number
+  status: 'available' | 'occupied' | 'reserved' | 'cleaning'
+  is_active: boolean
+}
+
+export interface Branch {
+  id: number
+  name: string
+  code: string
+  is_default: boolean
+  is_active: boolean
 }
 
 export interface Customer {
@@ -259,6 +329,7 @@ export interface CashRegisterSession {
 
 export interface CashRegister {
   id: number
+  branch_id: number | null
   name: string
   code: string
   is_active: boolean
@@ -312,6 +383,69 @@ export interface StaffMember {
   status: 'active' | 'invited'
 }
 
+export interface SalonStaffProfile {
+  id: number
+  name: string
+  email: string | null
+  phone: string | null
+  employee_id: string | null
+  employment_type: string
+  employment_started_on: string | null
+  employment_status: 'active' | 'inactive' | 'on_leave'
+  account_status: 'active' | 'profile_only'
+  job_titles: Array<{ id: number; name: string; is_primary: boolean }>
+  branches: Array<{ id: number; name: string }>
+  services: Array<{ id: number; name: string }>
+  commission_type: 'percentage' | 'fixed' | null
+  commission_value: string | null
+}
+
+export interface SalonJobTitle {
+  id: number
+  name: string
+  slug: string
+  default_permissions: string[] | null
+  is_predefined: boolean
+}
+
+export async function getSalonStaff(params: { search?: string; status?: string } = {}): Promise<{ data: SalonStaffProfile[]; summary: { total: number; active: number; on_duty: number; on_leave: number } }> {
+  const response = await apiClient.get<{ data: SalonStaffProfile[]; meta: { summary: { total: number; active: number; on_duty: number; on_leave: number } } }>('/salon/staff', { params })
+  return { data: response.data.data, summary: response.data.meta.summary }
+}
+
+export async function getSalonJobTitles(): Promise<SalonJobTitle[]> {
+  const response = await apiClient.get<{ data: SalonJobTitle[] }>('/salon/job-titles')
+  return response.data.data
+}
+
+export async function createSalonJobTitle(payload: { name: string; default_permissions?: string[] }): Promise<SalonJobTitle> {
+  const response = await apiClient.post<{ data: SalonJobTitle }>('/salon/job-titles', payload)
+  return response.data.data
+}
+
+export async function createSalonStaff(payload: {
+  name: string
+  phone?: string
+  email?: string
+  employee_id?: string
+  employment_type: string
+  employment_started_on?: string
+  employment_status: string
+  job_title_ids: number[]
+  branch_ids: number[]
+  service_ids: number[]
+  permission_overrides?: string[]
+  commission_type?: 'percentage' | 'fixed'
+  commission_value?: number
+}): Promise<SalonStaffProfile> {
+  const response = await apiClient.post<{ data: SalonStaffProfile }>('/salon/staff', payload)
+  return response.data.data
+}
+
+export async function updateSalonStaffStatus(id: number, employment_status: SalonStaffProfile['employment_status']): Promise<void> {
+  await apiClient.patch(`/salon/staff/${id}/status`, { employment_status })
+}
+
 interface PaginatedResponse<T> {
   data: T[]
   meta: { current_page: number; last_page: number; total: number }
@@ -343,8 +477,22 @@ export async function createProduct(product: {
   batch_tracking_enabled?: boolean
   product_type?: 'goods' | 'service'
   service_duration_minutes?: number
+  service_buffer_minutes?: number
+  commission_type?: 'percentage' | 'fixed'
+  commission_value?: number
   variant_attributes?: Record<string, string>
   bulk_pricing?: Array<{ minimum_quantity: number; unit_price: number }>
+  brand_name?: string
+  generic_name?: string
+  active_ingredient?: string
+  strength?: string
+  dosage_form?: string
+  pack_size?: string
+  unit_of_sale?: string
+  manufacturer?: string
+  registration_number?: string
+  medicine_classification?: 'otc' | 'prescription' | 'controlled'
+  prescription_required?: boolean
   name: string
   category?: string
   unit_price: number
@@ -372,20 +520,62 @@ export async function receiveInventoryBatch(payload: {
   return response.data.data
 }
 
-export async function getAppointments(): Promise<Appointment[]> {
-  const response = await apiClient.get<PaginatedResponse<Appointment>>('/appointments')
+export async function getAppointments(filters: { from?: string; to?: string; staff_user_id?: number; staff_profile_id?: number; branch_id?: number } = {}): Promise<Appointment[]> {
+  const response = await apiClient.get<PaginatedResponse<Appointment>>('/appointments', { params: filters })
   return response.data.data
 }
 
 export async function createAppointment(payload: {
   customer_id?: number
   service_product_id: number
-  staff_user_id: number
-  starts_at: string
+  staff_user_id?: number
+  staff_profile_id?: number
+  starts_at?: string
+  branch_id?: number
+  walk_in?: boolean
   duration_minutes?: number
   notes?: string
 }): Promise<Appointment> {
   const response = await apiClient.post<{ data: Appointment }>('/appointments', payload)
+  return response.data.data
+}
+
+export async function updateAppointment(id: number, payload: {
+  customer_id?: number
+  service_product_id: number
+  staff_user_id?: number
+  staff_profile_id?: number
+  starts_at: string
+  branch_id?: number
+  duration_minutes?: number
+  notes?: string
+}): Promise<Appointment> {
+  const response = await apiClient.put<{ data: Appointment }>(`/appointments/${id}`, payload)
+  return response.data.data
+}
+
+export async function checkInAppointment(id: number): Promise<Appointment> {
+  const response = await apiClient.post<{ data: Appointment }>(`/appointments/${id}/check-in`)
+  return response.data.data
+}
+
+export async function getStaffSchedules(filters: { branch_id?: number; staff_user_id?: number } = {}): Promise<StaffSchedule[]> {
+  const response = await apiClient.get<{ data: StaffSchedule[] }>('/staff-schedules', { params: filters })
+  return response.data.data
+}
+
+export async function saveStaffSchedule(payload: Omit<StaffSchedule, 'id'>): Promise<StaffSchedule> {
+  const response = await apiClient.put<{ data: StaffSchedule }>('/staff-schedules', payload)
+  return response.data.data
+}
+
+export async function getCommissionEntries(): Promise<{ data: CommissionEntry[]; summary: { earned: string; reversed: string; pending: string; approved: string; paid: string } }> {
+  const response = await apiClient.get<{ data: CommissionEntry[]; meta: { summary: { earned: string; reversed: string; pending: string; approved: string; paid: string } } }>('/commissions')
+  return { data: response.data.data, summary: response.data.meta.summary }
+}
+
+export async function updateCommissionStatus(id: number, status: 'approved' | 'paid', payout_reference?: string): Promise<CommissionEntry> {
+  const response = await apiClient.patch<{ data: CommissionEntry }>(`/commissions/${id}/status`, { status, payout_reference })
   return response.data.data
 }
 
@@ -399,9 +589,38 @@ export async function getRestaurantOrders(): Promise<RestaurantOrder[]> {
   return response.data.data
 }
 
+export async function getBranches(): Promise<Branch[]> {
+  const response = await apiClient.get<{ data: Branch[] }>('/branches')
+  return response.data.data
+}
+
+export async function getRestaurantTables(branchId?: number): Promise<RestaurantTable[]> {
+  const response = await apiClient.get<{ data: RestaurantTable[] }>('/restaurant/tables', {
+    params: branchId ? { branch_id: branchId } : {},
+  })
+  return response.data.data
+}
+
+export async function createRestaurantTable(payload: {
+  branch_id: number
+  name: string
+  area?: string
+  seating_capacity: number
+}): Promise<RestaurantTable> {
+  const response = await apiClient.post<{ data: RestaurantTable }>('/restaurant/tables', payload)
+  return response.data.data
+}
+
+export async function updateRestaurantTableStatus(id: number, status: 'available' | 'reserved' | 'cleaning'): Promise<RestaurantTable> {
+  const response = await apiClient.patch<{ data: RestaurantTable }>(`/restaurant/tables/${id}`, { status })
+  return response.data.data
+}
+
 export async function createRestaurantOrder(payload: {
+  cash_register_id?: number
   customer_id?: number
   order_type: RestaurantOrder['order_type']
+  restaurant_table_id?: number
   table_name?: string
   notes?: string
   items: Array<{ product_id: number; quantity: number; notes?: string }>
@@ -420,8 +639,8 @@ export async function getStaff(): Promise<StaffMember[]> {
   return response.data.data
 }
 
-export async function getBusinessProviders(): Promise<Array<{ id: number; name: string }>> {
-  const response = await apiClient.get<{ data: Array<{ id: number; name: string }> }>('/business/providers')
+export async function getBusinessProviders(): Promise<Array<{ id: string; staff_user_id: number | null; staff_profile_id: number | null; name: string }>> {
+  const response = await apiClient.get<{ data: Array<{ id: string; staff_user_id: number | null; staff_profile_id: number | null; name: string }> }>('/business/providers')
   return response.data.data
 }
 
@@ -535,7 +754,6 @@ export async function getBusinessSettings(): Promise<BusinessSettings> {
 export async function updateBusinessSettings(settings: BusinessSettings): Promise<BusinessSettings> {
   const response = await apiClient.put<{ data: BusinessSettings }>('/business/settings', {
     name: settings.name,
-    industry: settings.industry,
     currency: settings.currency,
     timezone: settings.timezone,
     settings: settings.settings,

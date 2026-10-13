@@ -81,7 +81,7 @@ export default function RegisterPage() {
     resolver: zodResolver(registerSchema),
     defaultValues: {
       business_name: '',
-      industry: 'general',
+      industry: '',
       currency: 'KES',
       timezone: 'Africa/Nairobi',
       business_phone: '',
@@ -162,8 +162,10 @@ export default function RegisterPage() {
           <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">
             Business type
             <select className="rounded-xl border border-graphite/15 bg-white px-4 py-2.5 text-sm font-normal normal-case tracking-normal" {...form.register('industry')}>
+              <option value="" disabled>Select your business type</option>
               {(industriesQuery.data ?? []).map((industry) => <option key={industry.key} value={industry.key}>{industry.label}</option>)}
             </select>
+            {form.formState.errors.industry && <span role="alert" className="text-xs font-medium normal-case text-danger">{form.formState.errors.industry.message}</span>}
             {industriesQuery.isError && <span role="alert" className="text-xs font-medium normal-case text-danger">Business types could not be loaded. Refresh and try again.</span>}
           </label>
           <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wider text-graphite">

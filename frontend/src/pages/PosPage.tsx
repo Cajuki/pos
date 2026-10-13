@@ -33,6 +33,7 @@ import {
   getProductByBarcode,
   getProducts,
   getBusinessProviders,
+  getRestaurantTables,
   openCashRegister,
   createRestaurantOrder,
   type Product,
@@ -61,6 +62,7 @@ export default function PosPage({ canManageRegisters }: { canManageRegisters: bo
   const [serviceProviders, setServiceProviders] = useState<Record<number, number>>({})
   const [orderType, setOrderType] = useState<'standard' | 'dine_in' | 'takeaway' | 'delivery'>('standard')
   const [tableName, setTableName] = useState('')
+  const [restaurantTableId, setRestaurantTableId] = useState<number | undefined>()
   const [selectedProducts, setSelectedProducts] = useState<Record<number, Product>>({})
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<typeof paymentOptions[number]['value'] | null>(null)
   const [receipt, setReceipt] = useState<Sale | null>(null)
@@ -95,6 +97,13 @@ export default function PosPage({ canManageRegisters }: { canManageRegisters: bo
     queryFn: () => getCashRegisterStatus(selectedRegisterId),
     retry: 1,
   })
+  const registerBranchId = registerQuery.data?.register.branch_id
+  const restaurantTablesQuery = useQuery({
+    queryKey: ['restaurant-tables', registerBranchId],
+    queryFn: () => getRestaurantTables(registerBranchId!),
+    enabled: Boolean(registerBranchId && settingsQuery.data?.modules.includes('restaurant')),
+  })
+  const availableRestaurantTables = (restaurantTablesQuery.data ?? []).filter((table) => table.status === 'available')
   const checkoutMutation = useMutation({
     mutationFn: createSale,
     onSuccess: async (sale) => {
@@ -118,9 +127,11 @@ export default function PosPage({ canManageRegisters }: { canManageRegisters: bo
       setCartBarcodes({})
       setServiceProviders({})
       setTableName('')
+      setRestaurantTableId(undefined)
       setScanMessage('Order sent to the kitchen.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['restaurant-orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['restaurant-tables'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
         queryClient.invalidateQueries({ queryKey: ['products'] }),
         queryClient.invalidateQueries({ queryKey: ['pos-products'] }),
@@ -321,16 +332,19 @@ export default function PosPage({ canManageRegisters }: { canManageRegisters: bo
   function sendToKitchen() {
     if (orderType === 'standard') return
     restaurantOrderMutation.mutate({
+      ...(registerId ? { cash_register_id: registerId } : {}),
       customer_id: selectedCustomer?.id,
       order_type: orderType,
-      ...(orderType === 'dine_in' ? { table_name: tableName.trim() } : {}),
+      ...(orderType === 'dine_in' ? (restaurantTableId
+        ? { restaurant_table_id: restaurantTableId }
+        : { table_name: tableName.trim() }) : {}),
       items: cartLines.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
     })
   }
 
   const canSendToKitchen = orderType !== 'standard'
     && cartLines.length > 0
-    && (orderType !== 'dine_in' || Boolean(tableName.trim()))
+    && (orderType !== 'dine_in' || Boolean(restaurantTableId || tableName.trim()))
     && !cartLines.some(({ product }) => product.barcode_tracking_enabled)
 
   return (
@@ -504,12 +518,23 @@ export default function PosPage({ canManageRegisters }: { canManageRegisters: bo
                 <option value="delivery">Delivery</option>
               </select>
               {orderType === 'dine_in' && (
-                <input
-                  aria-label="Table name or number"
-                  value={tableName}
-                  onChange={(event) => setTableName(event.target.value)}
-                  placeholder="Table name or number"
-                />
+                restaurantTablesQuery.data?.length ? (
+                  <select
+                    aria-label="Dining table"
+                    value={restaurantTableId ?? ''}
+                    onChange={(event) => { setRestaurantTableId(event.target.value ? Number(event.target.value) : undefined); setTableName('') }}
+                  >
+                    <option value="">Select an available table</option>
+                    {availableRestaurantTables.map((table) => <option key={table.id} value={table.id}>{table.area ? `${table.area} · ` : ''}{table.name} · {table.seating_capacity} seats</option>)}
+                  </select>
+                ) : (
+                  <input
+                    aria-label="Table name or number"
+                    value={tableName}
+                    onChange={(event) => setTableName(event.target.value)}
+                    placeholder="Table label"
+                  />
+                )
               )}
               <button
                 className="pos-kitchen-button"

@@ -1104,6 +1104,63 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 5]);
     }
 
+    public function test_pharmacy_medicine_details_are_tenant_configured_and_prescription_sales_are_blocked(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update([
+            'industry' => 'pharmacy',
+            'settings' => [...$business->posSettings(), 'enabled_modules' => ['pharmacy']],
+        ]);
+        $this->useBusinessContext($user, $business);
+
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'MED-RX-001',
+            'name' => 'Amoxicillin 500 mg capsules',
+            'unit_price' => 850,
+            'batch_tracking_enabled' => true,
+            'brand_name' => 'Example brand',
+            'generic_name' => 'Amoxicillin',
+            'active_ingredient' => 'Amoxicillin trihydrate',
+            'strength' => '500 mg',
+            'dosage_form' => 'capsule',
+            'pack_size' => '21 capsules',
+            'unit_of_sale' => 'capsule',
+            'manufacturer' => 'Example Pharma',
+            'registration_number' => 'REG-001',
+            'medicine_classification' => 'prescription',
+            'prescription_required' => true,
+        ])->assertCreated()
+            ->assertJsonPath('data.generic_name', 'Amoxicillin')
+            ->assertJsonPath('data.dosage_form', 'capsule')
+            ->assertJsonPath('data.prescription_required', true)
+            ->json('data');
+
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'RX-LOT-001',
+            'expires_on' => now()->addMonths(6)->toDateString(),
+            'quantity' => 21,
+        ])->assertCreated();
+        $this->postJson('/api/v1/cash-registers/open', ['opening_balance' => '0.00'])->assertCreated();
+        $this->postJson('/api/v1/sales', [
+            'payment_method' => 'cash',
+            'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+        ])->assertUnprocessable()->assertJsonValidationErrors('items.0.product_id');
+        $this->assertDatabaseHas('inventory_batches', ['product_id' => $product['id'], 'quantity_remaining' => 21]);
+        $this->assertDatabaseCount('sales', 0);
+
+        $business->update([
+            'industry' => 'retail',
+            'settings' => [...$business->posSettings(), 'enabled_modules' => []],
+        ]);
+        $this->postJson('/api/v1/products', [
+            'sku' => 'RETAIL-MED-001',
+            'name' => 'Misconfigured medicine',
+            'unit_price' => 10,
+            'generic_name' => 'Example',
+        ])->assertUnprocessable()->assertJsonValidationErrors('medicine_classification');
+    }
+
     public function test_wholesale_quantity_tiers_are_applied_by_the_server_at_checkout(): void
     {
         [$user, $business] = $this->createBusinessContext();

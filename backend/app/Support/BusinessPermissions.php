@@ -16,6 +16,15 @@ class BusinessPermissions
         $role = $user->businesses()
             ->whereKey($business->getKey())
             ->value('business_user.role');
+        if ($role && ! in_array($role, ['owner', 'admin', 'platform_admin'], true)) {
+            $staffProfile = $business->staffProfiles()
+                ->where('user_id', $user->id)
+                ->first();
+            $staffPermissions = $staffProfile?->permission_overrides;
+            if (is_array($staffPermissions)) {
+                return $staffPermissions;
+            }
+        }
         $permissions = $role
             ? ($business->posSettings()['role_permissions'][$role] ?? config('pos.roles.'.$role))
             : null;

@@ -2,17 +2,17 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-champagne: #e9f4ef;
-  --color-champagne-light: #f4f8f6;
-  --color-champagne-dark: #d7e9df;
+  --color-champagne: #f3e5c8;
+  --color-champagne-light: #fcf9f1;
+  --color-champagne-dark: #e8d5ab;
 
-  --color-lime: #16745d;
-  --color-lime-light: #21846b;
-  --color-lime-dark: #105844;
+  --color-lime: #b7f34a;
+  --color-lime-light: #d9ff9b;
+  --color-lime-dark: #8ebd2e;
 
-  --color-graphite: #172923;
-  --color-graphite-light: #40564c;
-  --color-graphite-dark: #123b30;
+  --color-graphite: #252525;
+  --color-graphite-light: #3d3d3a;
+  --color-graphite-dark: #171817;
 
   --color-success: #2e7d32;
   --color-warning: #ed6c02;
@@ -34,15 +34,15 @@
   --graphite-light: #3d3d3a;
   --graphite-dark: #171817;
 
-  --border-subtle: #e6ece9;
-  --border-strong: #d5dfda;
-  --surface-warm: #f4f7f5;
-  --surface-card: #ffffff;
-  --brand-green: #16745d;
-  --brand-green-dark: #105844;
-  --brand-green-soft: #e9f4ef;
-  --ink-primary: #172923;
-  --ink-muted: #718078;
+  --border-subtle: #e8e1d2;
+  --border-strong: #d8cfbd;
+  --surface-warm: #fcf9f1;
+  --surface-card: #fffefa;
+  --brand-green: #8ebd2e;
+  --brand-green-dark: #6f9823;
+  --brand-green-soft: #f1f8df;
+  --ink-primary: #252525;
+  --ink-muted: #77756e;
 
   font-family: var(--font-sans);
   color: var(--ink-primary);
@@ -84,7 +84,7 @@ button, a, input, select, textarea {
 }
 
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
-  outline: 2px solid var(--brand-green);
+  outline: 2px solid var(--lime-dark);
   outline-offset: 2px;
 }
 

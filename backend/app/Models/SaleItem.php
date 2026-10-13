@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable(['sale_id', 'product_id', 'sku', 'barcode', 'product_name', 'quantity', 'unit_price', 'unit_cost', 'line_total', 'performed_by_user_id'])]
 class SaleItem extends Model
@@ -48,5 +49,10 @@ class SaleItem extends Model
     public function refundItems(): HasMany
     {
         return $this->hasMany(RefundItem::class);
+    }
+
+    public function commissionEntry(): HasOne
+    {
+        return $this->hasOne(CommissionEntry::class);
     }
 }

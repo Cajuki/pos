@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Mail\TeamInvitationMail;
 use App\Models\Business;
+use App\Models\StaffProfile;
 use App\Models\TeamInvitation;
 use App\Models\User;
 use App\Support\BusinessPermissions;
@@ -35,14 +36,14 @@ class BusinessController extends Controller
             ? Business::query()->get()
             : $request->user()->businesses()->get())
             ->map(fn (Business $business): array => [
-            ...$business->only(['id', 'name', 'currency', 'timezone']),
-            'industry' => $business->industry,
-            'modules' => $business->industryModules(),
-            'role' => $request->user()->is_platform_admin
-                ? 'platform_admin'
-                : $business->pivot->role,
-            'permissions' => $permissions->forBusiness($request->user(), $business),
-        ]);
+                ...$business->only(['id', 'name', 'currency', 'timezone']),
+                'industry' => $business->industry,
+                'modules' => $business->industryModules(),
+                'role' => $request->user()->is_platform_admin
+                    ? 'platform_admin'
+                    : $business->pivot->role,
+                'permissions' => $permissions->forBusiness($request->user(), $business),
+            ]);
 
         return response()->json(['data' => $businesses]);
     }
@@ -66,7 +67,7 @@ class BusinessController extends Controller
     public function staff(Request $request): JsonResponse
     {
         $business = $request->attributes->get('business');
-        $this->authorizeStaffManagement($request, $business);
+        $this->authorizeTeamAccess($request, $business);
 
         $staff = $business->users()->get()->map(fn (User $user): array => [
             'id' => $user->id,
@@ -96,15 +97,21 @@ class BusinessController extends Controller
         $providers = $business->users()
             ->orderBy('name')
             ->get(['users.id', 'users.name'])
-            ->map(fn (User $user): array => ['id' => $user->id, 'name' => $user->name]);
+            ->map(fn (User $user): array => ['id' => 'user-'.$user->id, 'staff_user_id' => $user->id, 'staff_profile_id' => null, 'name' => $user->name]);
+        $profileProviders = $business->staffProfiles()
+            ->whereNull('user_id')
+            ->where('employment_status', 'active')
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (StaffProfile $profile): array => ['id' => 'profile-'.$profile->id, 'staff_user_id' => null, 'staff_profile_id' => $profile->id, 'name' => $profile->name]);
 
-        return response()->json(['data' => $providers]);
+        return response()->json(['data' => $providers->concat($profileProviders)->values()]);
     }
 
     public function addStaff(Request $request): JsonResponse
     {
         $business = $request->attributes->get('business');
-        $this->authorizeStaffManagement($request, $business);
+        $this->authorizeTeamAccess($request, $business);
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
@@ -113,6 +120,19 @@ class BusinessController extends Controller
                 ...array_keys($business->posSettings()['role_permissions']),
             ])],
         ]);
+
+        $role = $request->user()->businesses()->whereKey($business->id)->value('business_user.role');
+        if (! $request->user()->is_platform_admin && ! in_array($role, ['owner', 'admin'], true)
+            && in_array($validated['role'], ['owner', 'admin', 'manager', 'platform_admin'], true)) {
+            throw ValidationException::withMessages(['role' => 'Only a business owner or admin can invite a privileged manager.']);
+        }
+        if (! $request->user()->is_platform_admin && ! in_array($role, ['owner', 'admin'], true)) {
+            $assignedPermissions = $business->posSettings()['role_permissions'][$validated['role']]
+                ?? config('pos.roles.'.$validated['role'], []);
+            if ($assignedPermissions === '*' || array_intersect($assignedPermissions, ['business.manage', 'staff.manage', 'settings.manage'])) {
+                throw ValidationException::withMessages(['role' => 'This role grants privileged access and can only be assigned by a business owner or admin.']);
+            }
+        }
 
         $email = strtolower(trim($validated['email']));
         $plainTextToken = Str::random(64);
@@ -213,6 +233,11 @@ class BusinessController extends Controller
             ]);
             $user->forceFill(['email_verified_at' => now()])->save();
             $user->businesses()->attach($business, ['role' => $invitation->role]);
+            StaffProfile::query()
+                ->where('business_id', $business->id)
+                ->where('email', $invitation->email)
+                ->whereNull('user_id')
+                ->update(['user_id' => $user->id]);
             $invitation->update(['accepted_at' => now()]);
 
             return [
@@ -274,7 +299,6 @@ class BusinessController extends Controller
         $this->authorizeStaffManagement($request, $business);
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:160'],
-            'industry' => ['sometimes', 'string', Rule::in(array_keys(config('pos.industries')))],
             'currency' => ['required', 'string', Rule::in(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR'])],
             'timezone' => ['required', 'timezone:all'],
             'settings' => ['required', 'array'],
@@ -282,7 +306,7 @@ class BusinessController extends Controller
             'settings.enabled_modules.*' => [
                 'required',
                 'distinct',
-                Rule::in(config('pos.industries.'.$request->input('industry', $business->industry).'.modules', [])),
+                Rule::in(config('pos.industries.'.$business->industry.'.modules', [])),
             ],
             'settings.role_permissions' => ['sometimes', 'array'],
             'settings.role_permissions.*' => ['required', 'array'],
@@ -317,7 +341,7 @@ class BusinessController extends Controller
             }
         }
         $validated['settings']['role_permissions'] ??= $business->posSettings()['role_permissions'];
-        $industry = $validated['industry'] ?? $business->industry;
+        $industry = $business->industry;
 
         foreach (['business_phone', 'business_email', 'business_address', 'tax_number', 'receipt_footer'] as $field) {
             $validated['settings'][$field] ??= '';
@@ -362,5 +386,15 @@ class BusinessController extends Controller
         $role = $request->user()->businesses()->whereKey($business->getKey())->value('business_user.role');
 
         abort_unless($request->user()->is_platform_admin || in_array($role, ['owner', 'admin'], true), 403, 'Only business owners and admins can manage staff.');
+    }
+
+    private function authorizeTeamAccess(Request $request, Business $business): void
+    {
+        abort_unless(
+            $request->user()->is_platform_admin
+                || app(BusinessPermissions::class)->allows($request->user(), $business, 'staff.manage'),
+            403,
+            'You do not have permission to manage team access.',
+        );
     }
 }

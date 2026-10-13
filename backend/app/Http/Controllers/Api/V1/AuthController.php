@@ -22,7 +22,7 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'business_name' => ['required', 'string', 'max:160'],
-            'industry' => ['sometimes', 'string', Rule::in(array_keys(config('pos.industries')))],
+            'industry' => ['required', 'string', Rule::in(array_keys(config('pos.industries')))],
             'currency' => ['sometimes', 'string', Rule::in(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR'])],
             'timezone' => ['sometimes', 'timezone:all'],
             'business_phone' => ['sometimes', 'nullable', 'string', 'max:40'],

@@ -32,7 +32,8 @@ export default function InventoryPage() {
   const inventoryQuery = useQuery({ queryKey: ['inventory'], queryFn: getInventory })
   const settingsQuery = useQuery({ queryKey: ['business-settings'], queryFn: getBusinessSettings })
   const movementsQuery = useQuery({ queryKey: ['stock-movements'], queryFn: getStockMovements })
-  const batchesQuery = useQuery({ queryKey: ['inventory-batches'], queryFn: getInventoryBatches, enabled: settingsQuery.data?.settings.enabled_modules.includes('pharmacy') ?? false })
+  const isPharmacy = settingsQuery.data?.industry === 'pharmacy'
+  const batchesQuery = useQuery({ queryKey: ['inventory-batches'], queryFn: getInventoryBatches, enabled: isPharmacy })
   const currency = settingsQuery.data?.currency ?? 'KES'
   const individuallyTrackedProducts = (inventoryQuery.data ?? []).filter((item) => item.barcode_tracking_enabled)
   const batchTrackedProducts = (inventoryQuery.data ?? []).filter((item) => item.batch_tracking_enabled)
@@ -112,8 +113,8 @@ export default function InventoryPage() {
   }))
 
   return (
-    <section className="module-page">
-      <div className="mb-6 flex items-center justify-between gap-4">
+    <section className="module-page inventory-page">
+      <div className="inventory-header mb-6 flex items-center justify-between gap-4">
         <div>
           <p className="eyebrow">Operations</p>
           <h1>Inventory</h1>
@@ -123,8 +124,8 @@ export default function InventoryPage() {
         </Button>
       </div>
 
-      <Card className="mb-5 p-5">
-        <div className="mb-4">
+      <Card className="receive-stock-card inventory-unit-receipt mb-5 p-5">
+        <div className="inventory-section-heading mb-4">
           <h2 className="text-xl font-bold text-graphite">Receive individually tracked units</h2>
           <p className="mt-1 text-sm text-graphite/65">For products set to unique barcodes per physical unit, scan each unit once. Every successful scan adds one unit; ordinary shared-barcode products use quantity adjustments or Purchases.</p>
         </div>
@@ -148,8 +149,8 @@ export default function InventoryPage() {
         </form>
       </Card>
 
-      {settingsQuery.data?.settings.enabled_modules.includes('pharmacy') && <Card className="mb-5 p-5">
-        <div className="mb-4">
+      {isPharmacy && <Card className="receive-stock-card pharmacy-stock-card inventory-batch-receipt mb-5 p-5">
+        <div className="inventory-section-heading mb-4">
           <h2 className="text-xl font-bold text-graphite">Receive pharmacy batch</h2>
           <p className="mt-1 text-sm text-graphite/65">Record the supplier lot and expiry date. Checkout excludes expired lots and consumes valid stock by earliest expiry (FEFO).</p>
         </div>
@@ -195,7 +196,7 @@ export default function InventoryPage() {
       </Card>}
 
       {isAdjustmentOpen && (
-        <Card className="mb-5 p-5">
+        <Card className="inventory-adjustment-card mb-5 p-5">
           <form className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={submitAdjustment}>
             <label className="grid gap-1 text-sm font-medium text-graphite">Product
               <select required name="product_id" className="rounded-xl border border-graphite/10 bg-white px-3 py-2.5">
@@ -213,7 +214,7 @@ export default function InventoryPage() {
         </Card>
       )}
 
-      <Card className="p-5">
+      <Card className="inventory-table-card p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl font-bold text-graphite">Stock overview</h2>
           <span className="text-sm text-graphite/60">{inventoryQuery.data?.length ?? 0} products</span>
@@ -236,7 +237,7 @@ export default function InventoryPage() {
         />
       </Card>
 
-      <Card className="mt-6 p-5">
+      <Card className="inventory-table-card mt-6 p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl font-bold text-graphite">Stock movements</h2>
           <span className="text-sm text-graphite/60">{movementsQuery.data?.length ?? 0} loaded</span>

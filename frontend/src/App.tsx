@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowUpRight,
   Bell,
+  BadgeDollarSign,
   Boxes,
   ChartNoAxesCombined,
   ChevronDown,
@@ -36,6 +37,7 @@ import ForgotPasswordPage from './features/auth/ForgotPasswordPage'
 import LoginPage from './features/auth/LoginPage'
 import CustomersPage from './pages/CustomersPage'
 import AppointmentsPage from './pages/AppointmentsPage'
+import CommissionsPage from './pages/CommissionsPage'
 import InventoryPage from './pages/InventoryPage'
 import KitchenOrdersPage from './pages/KitchenOrdersPage'
 import PosPage from './pages/PosPage'
@@ -48,6 +50,7 @@ import ReportsPage from './pages/ReportsPage'
 import SalesPage from './pages/SalesPage'
 import SettingsPage from './pages/SettingsPage'
 import StaffPage from './pages/StaffPage'
+import SalonStaffPage from './pages/SalonStaffPage'
 import { formatCurrency, getInitials } from './lib/utils'
 
 const navigation = [
@@ -55,6 +58,7 @@ const navigation = [
   { label: 'Point of sale', to: '/pos', icon: ShoppingCart, permission: 'sales.create' },
   { label: 'Kitchen orders', to: '/kitchen', icon: Utensils, permission: 'restaurant.manage', module: 'restaurant' },
   { label: 'Appointments', to: '/appointments', icon: CalendarDays, permission: 'appointments.manage', module: 'appointments' },
+  { label: 'Commissions', to: '/commissions', icon: BadgeDollarSign, permission: 'commissions.manage', module: 'appointments' },
   { label: 'Products', to: '/products', icon: Boxes, permission: 'products.read' },
   { label: 'Inventory', to: '/inventory', icon: PackageSearch, permission: 'inventory.read' },
   { label: 'Sales', to: '/sales', icon: CreditCard, permission: 'sales.read' },
@@ -67,6 +71,7 @@ const pages: Record<string, string> = {
   '/pos': 'Point of sale',
   '/kitchen': 'Kitchen orders',
   '/appointments': 'Appointments',
+  '/commissions': 'Commissions',
   '/products': 'Products',
   '/inventory': 'Inventory',
   '/sales': 'Sales',
@@ -74,6 +79,7 @@ const pages: Record<string, string> = {
   '/purchases': 'Purchases',
   '/reports': 'Reports',
   '/team': 'Team',
+  '/salon-staff': 'Staff management',
   '/settings': 'Settings',
 }
 
@@ -339,6 +345,10 @@ function ProtectedAppShell() {
             <UsersRound size={18} />
             <span>Team</span>
           </NavLink>}
+          {canManageStaff && enabledModules.includes('appointments') && <NavLink onClick={() => setMobileOpen(false)} to="/salon-staff" className={({ isActive }) => `nav-item ${isActive ? 'nav-active' : ''}`}>
+            <UsersRound size={18} />
+            <span>Staff management</span>
+          </NavLink>}
         </nav>
 
         <div className="sidebar-bottom">
@@ -406,6 +416,7 @@ function ProtectedAppShell() {
             <Route path="/pos" element={canAccess('sales.create') ? <POSPage canManageRegisters={canAccess('registers.manage')} /> : accessDenied} />
             <Route path="/kitchen" element={canAccess('restaurant.manage', 'restaurant') ? <KitchenOrdersPage /> : accessDenied} />
             <Route path="/appointments" element={canAccess('appointments.manage', 'appointments') ? <AppointmentsPage /> : accessDenied} />
+            <Route path="/commissions" element={canAccess('commissions.manage', 'appointments') ? <CommissionsPage /> : accessDenied} />
             <Route path="/products" element={canAccess('products.read') ? <ProductsPage /> : accessDenied} />
             <Route path="/inventory" element={canAccess('inventory.read') ? <InventoryPage /> : accessDenied} />
             <Route path="/sales" element={canAccess('sales.read') ? <SalesPage canRefund={canAccess('sales.refund')} /> : accessDenied} />
@@ -413,6 +424,7 @@ function ProtectedAppShell() {
             <Route path="/purchases" element={canAccess('purchases.read') ? <PurchasesPage /> : accessDenied} />
             <Route path="/reports" element={canAccess('reports.read') ? <ReportsPage /> : accessDenied} />
             <Route path="/team" element={canManageStaff ? <StaffPage /> : accessDenied} />
+            <Route path="/salon-staff" element={canManageStaff && enabledModules.includes('appointments') ? <SalonStaffPage /> : accessDenied} />
             <Route path="/settings" element={canAccess('settings.manage') ? <SettingsPage /> : accessDenied} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
