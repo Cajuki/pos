@@ -11,15 +11,15 @@ import { getBusinessIndustries, registerBusiness, saveAuthSession } from '../../
 import { Button } from '../../components/ui/Button'
 
 const registerSchema = z.object({
-  business_name: z.string().min(2, 'Business name is required.'),
+  business_name: z.string().trim().min(2, 'Business name is required.'),
   industry: z.string().min(1, 'Choose your business type.'),
   currency: z.enum(['KES', 'USD', 'UGX', 'TZS', 'RWF', 'EUR', 'GBP', 'ZAR']),
   timezone: z.string().min(1, 'Choose your time zone.'),
   business_phone: z.string().max(40).optional(),
-  business_email: z.union([z.literal(''), z.email()]).optional(),
+  business_email: z.string().trim().toLowerCase().pipe(z.union([z.literal(''), z.email()])).optional(),
   business_address: z.string().max(255).optional(),
-  name: z.string().min(2, 'Your name is required.'),
-  email: z.string().email('Enter a valid work email.'),
+  name: z.string().trim().min(2, 'Your name is required.'),
+  email: z.string().trim().toLowerCase().email('Enter a valid work email.'),
   password: z.string()
     .min(12, 'Password must be at least 12 characters.')
     .regex(/[a-z]/, 'Password must include a lowercase letter.')

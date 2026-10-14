@@ -81,6 +81,12 @@ export interface InventoryBatch {
   product: { id: number; sku: string; name: string }
 }
 
+export interface InventoryBatchExpirySummary {
+  as_of: string
+  expired_units: number
+  expiring_units: number
+}
+
 export interface SaleItem {
   id: number
   product_id: number
@@ -504,9 +510,17 @@ export async function createProduct(product: {
   return response.data.data
 }
 
-export async function getInventoryBatches(): Promise<InventoryBatch[]> {
-  const response = await apiClient.get<PaginatedResponse<InventoryBatch>>('/inventory/batches')
-  return response.data.data
+export async function getInventoryBatches(): Promise<{
+  batches: InventoryBatch[]
+  expirySummary: InventoryBatchExpirySummary
+}> {
+  const response = await apiClient.get<PaginatedResponse<InventoryBatch> & {
+    meta: PaginatedResponse<InventoryBatch>['meta'] & { expiry_alerts: InventoryBatchExpirySummary }
+  }>('/inventory/batches')
+  return {
+    batches: response.data.data,
+    expirySummary: response.data.meta.expiry_alerts,
+  }
 }
 
 export async function receiveInventoryBatch(payload: {

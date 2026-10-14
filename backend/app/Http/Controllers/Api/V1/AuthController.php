@@ -20,6 +20,15 @@ class AuthController extends Controller
 {
     public function registerBusiness(Request $request): JsonResponse
     {
+        $businessEmail = mb_strtolower(trim((string) $request->input('business_email', '')));
+
+        $request->merge([
+            'business_name' => trim((string) $request->input('business_name', '')),
+            'name' => trim((string) $request->input('name', '')),
+            'email' => mb_strtolower(trim((string) $request->input('email', ''))),
+            'business_email' => $businessEmail !== '' ? $businessEmail : null,
+        ]);
+
         $validated = $request->validate([
             'business_name' => ['required', 'string', 'max:160'],
             'industry' => ['required', 'string', Rule::in(array_keys(config('pos.industries')))],
@@ -29,7 +38,7 @@ class AuthController extends Controller
             'business_email' => ['sometimes', 'nullable', 'email', 'max:255'],
             'business_address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'name' => ['required', 'string', 'max:120'],
-            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+            'email' => ['required', 'email', 'max:255'],
             'password' => [
                 'required',
                 'string',
@@ -41,6 +50,10 @@ class AuthController extends Controller
                 'confirmed',
             ],
         ]);
+
+        if (User::query()->whereRaw('LOWER(email) = ?', [$validated['email']])->exists()) {
+            throw ValidationException::withMessages(['email' => ['The email has already been taken.']]);
+        }
 
         [$user, $business, $token] = DB::transaction(function () use ($validated): array {
             $industry = $validated['industry'] ?? 'general';
@@ -102,13 +115,19 @@ class AuthController extends Controller
 
     public function login(Request $request, BusinessPermissions $permissions): JsonResponse
     {
+        $request->merge([
+            'email' => mb_strtolower(trim((string) $request->input('email', ''))),
+        ]);
+
         $validated = $request->validate([
             'email' => ['required', 'email'],
             'password' => ['required', 'string'],
             'device_name' => ['sometimes', 'string', 'max:100'],
         ]);
 
-        $user = User::query()->where('email', $validated['email'])->first();
+        $user = User::query()
+            ->whereRaw('LOWER(email) = ?', [$validated['email']])
+            ->first();
 
         if (! $user || ! Hash::check($validated['password'], $user->password)) {
             throw ValidationException::withMessages(['email' => ['The provided credentials are incorrect.']]);

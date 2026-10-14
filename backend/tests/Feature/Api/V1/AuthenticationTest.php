@@ -79,6 +79,41 @@ class AuthenticationTest extends TestCase
         $this->assertDatabaseHas('subscription_plans', ['code' => 'starter']);
     }
 
+    public function test_business_registration_trims_names_and_normalizes_emails(): void
+    {
+        $response = $this->postJson('/api/v1/auth/register-business', [
+            'business_name' => '  Demo Retail Ltd  ',
+            'industry' => 'general',
+            'name' => '  Amina Mwangi  ',
+            'email' => ' AMINA@Example.Test ',
+            'password' => 'Correct-horse-2026!',
+            'password_confirmation' => 'Correct-horse-2026!',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.business.name', 'Demo Retail Ltd')
+            ->assertJsonPath('data.user.name', 'Amina Mwangi')
+            ->assertJsonPath('data.user.email', 'amina@example.test');
+
+        $this->assertDatabaseHas('users', ['email' => 'amina@example.test']);
+    }
+
+    public function test_business_registration_rejects_existing_emails_without_case_sensitivity(): void
+    {
+        User::factory()->create(['email' => 'AMINA@example.test']);
+
+        $this->postJson('/api/v1/auth/register-business', [
+            'business_name' => 'Demo Retail Ltd',
+            'industry' => 'general',
+            'name' => 'Amina Mwangi',
+            'email' => 'amina@example.test',
+            'password' => 'Correct-horse-2026!',
+            'password_confirmation' => 'Correct-horse-2026!',
+        ])->assertUnprocessable()->assertJsonValidationErrors('email');
+
+        $this->assertDatabaseCount('businesses', 0);
+    }
+
     public function test_business_registration_rejects_unknown_industries(): void
     {
         $this->postJson('/api/v1/auth/register-business', [
@@ -117,7 +152,7 @@ class AuthenticationTest extends TestCase
         ])->assertUnprocessable();
 
         $this->postJson('/api/v1/auth/login', [
-            'email' => $user->email,
+            'email' => ' '.strtoupper($user->email).' ',
             'password' => 'correct-horse-battery',
         ])->assertOk()->assertJsonStructure(['data' => ['token', 'user', 'businesses']]);
     }

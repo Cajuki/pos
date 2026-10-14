@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Models\InventoryStock;
 use App\Models\InventoryBatch;
+use App\Models\InventoryStock;
 use App\Models\Product;
 use App\Models\ProductBarcode;
 use App\Models\StockMovement;
@@ -192,6 +192,16 @@ class InventoryController extends Controller
     public function batches(Request $request): JsonResponse
     {
         $business = $request->attributes->get('business');
+        $today = today();
+        $expirySummary = InventoryBatch::query()
+            ->where('business_id', $business->id)
+            ->where('quantity_remaining', '>', 0)
+            ->selectRaw(
+                'COALESCE(SUM(CASE WHEN expires_on < ? THEN quantity_remaining ELSE 0 END), 0) AS expired_units,
+                COALESCE(SUM(CASE WHEN expires_on >= ? AND expires_on <= ? THEN quantity_remaining ELSE 0 END), 0) AS expiring_units',
+                [$today->toDateString(), $today->toDateString(), $today->copy()->addDays(30)->toDateString()],
+            )
+            ->first();
         $batches = InventoryBatch::query()
             ->where('business_id', $business->id)
             ->with('product:id,sku,name')
@@ -200,7 +210,16 @@ class InventoryController extends Controller
 
         return response()->json([
             'data' => $batches->items(),
-            'meta' => ['current_page' => $batches->currentPage(), 'last_page' => $batches->lastPage(), 'total' => $batches->total()],
+            'meta' => [
+                'current_page' => $batches->currentPage(),
+                'last_page' => $batches->lastPage(),
+                'total' => $batches->total(),
+                'expiry_alerts' => [
+                    'as_of' => $today->toDateString(),
+                    'expired_units' => (int) $expirySummary->expired_units,
+                    'expiring_units' => (int) $expirySummary->expiring_units,
+                ],
+            ],
         ]);
     }
 

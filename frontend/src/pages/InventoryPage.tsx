@@ -34,6 +34,7 @@ export default function InventoryPage() {
   const movementsQuery = useQuery({ queryKey: ['stock-movements'], queryFn: getStockMovements })
   const isPharmacy = settingsQuery.data?.industry === 'pharmacy'
   const batchesQuery = useQuery({ queryKey: ['inventory-batches'], queryFn: getInventoryBatches, enabled: isPharmacy })
+  const expirySummary = batchesQuery.data?.expirySummary
   const currency = settingsQuery.data?.currency ?? 'KES'
   const individuallyTrackedProducts = (inventoryQuery.data ?? []).filter((item) => item.barcode_tracking_enabled)
   const batchTrackedProducts = (inventoryQuery.data ?? []).filter((item) => item.batch_tracking_enabled)
@@ -174,14 +175,48 @@ export default function InventoryPage() {
         </form>
         {batchesQuery.isError && <p role="alert" className="mt-4 text-sm text-danger">Pharmacy batches could not be loaded.</p>}
         <div className="mt-5">
+          <div className="mb-4 grid gap-3 sm:grid-cols-2">
+            <Card className="border border-danger/20 bg-danger/5 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-graphite/60">Expired units</p>
+              <p className="mt-1 text-2xl font-bold text-danger">{expirySummary?.expired_units ?? '—'}</p>
+              <p className="mt-1 text-xs text-graphite/60">Excluded from checkout until returned or disposed.</p>
+            </Card>
+            <Card className="border border-amber-300 bg-amber-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-graphite/60">Expiring in the next 30 days</p>
+              <p className="mt-1 text-2xl font-bold text-amber-800">{expirySummary?.expiring_units ?? '—'}</p>
+              <p className="mt-1 text-xs text-graphite/60">Units remaining in batches that need attention.</p>
+            </Card>
+          </div>
           <DataTable
             loading={batchesQuery.isPending}
-            rows={(batchesQuery.data ?? []).map((batch) => ({
-              ...batch,
-              product_name: batch.product.name,
-              expiry: batch.expires_on.slice(0, 10),
-              status: batch.expires_on.slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'Expired' : 'Usable',
-            }))}
+            rows={(batchesQuery.data?.batches ?? []).map((batch) => {
+              const daysUntilExpiry = Math.floor(
+                (Date.parse(`${batch.expires_on.slice(0, 10)}T00:00:00Z`) - Date.parse(`${expirySummary?.as_of ?? new Date().toISOString().slice(0, 10)}T00:00:00Z`))
+                / 86_400_000,
+              )
+
+              return {
+                ...batch,
+                product_name: batch.product.name,
+                expiry: batch.expires_on.slice(0, 10),
+                days_remaining: batch.quantity_remaining === 0
+                  ? '—'
+                  : daysUntilExpiry < 0
+                    ? `${Math.abs(daysUntilExpiry)} days overdue`
+                    : daysUntilExpiry === 0
+                      ? 'Today'
+                      : `${daysUntilExpiry} days`,
+                status: batch.quantity_remaining === 0
+                  ? 'Depleted'
+                  : daysUntilExpiry < 0
+                    ? 'Expired'
+                    : daysUntilExpiry === 0
+                      ? 'Expires today'
+                      : daysUntilExpiry <= 30
+                        ? 'Expiring soon'
+                        : 'Usable',
+              }
+            })}
             emptyMessage="No pharmacy batches received yet."
             columns={[
               { header: 'Product', accessor: 'product_name' },
@@ -189,6 +224,7 @@ export default function InventoryPage() {
               { header: 'Expires', accessor: 'expiry' },
               { header: 'Received', accessor: 'quantity_received' },
               { header: 'Remaining', accessor: 'quantity_remaining' },
+              { header: 'Time remaining', accessor: 'days_remaining' },
               { header: 'Status', accessor: 'status' },
             ]}
           />

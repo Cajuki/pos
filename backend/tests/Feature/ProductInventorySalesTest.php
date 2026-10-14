@@ -1104,6 +1104,50 @@ class ProductInventorySalesTest extends TestCase
         $this->assertDatabaseHas('inventory_stocks', ['product_id' => $product['id'], 'quantity_on_hand' => 5]);
     }
 
+    public function test_pharmacy_inventory_reports_expired_and_upcoming_expiry_units(): void
+    {
+        [$user, $business] = $this->createBusinessContext();
+        $business->update([
+            'industry' => 'pharmacy',
+            'settings' => [...$business->posSettings(), 'enabled_modules' => ['pharmacy']],
+        ]);
+        $this->useBusinessContext($user, $business);
+        $product = $this->postJson('/api/v1/products', [
+            'sku' => 'MED-EXPIRY-001',
+            'name' => 'Expiry test medicine',
+            'unit_price' => 120,
+            'batch_tracking_enabled' => true,
+        ])->assertCreated()->json('data');
+
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'LOT-EXPIRED',
+            'expires_on' => now()->addDays(5)->toDateString(),
+            'quantity' => 2,
+        ])->assertCreated();
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'LOT-SOON',
+            'expires_on' => now()->addDays(10)->toDateString(),
+            'quantity' => 3,
+        ])->assertCreated();
+        $this->postJson('/api/v1/inventory/batches/receive', [
+            'product_id' => $product['id'],
+            'lot_number' => 'LOT-LATER',
+            'expires_on' => now()->addDays(31)->toDateString(),
+            'quantity' => 4,
+        ])->assertCreated();
+        DB::table('inventory_batches')
+            ->where('business_id', $business->id)
+            ->where('lot_number', 'LOT-EXPIRED')
+            ->update(['expires_on' => now()->subDay()->toDateString()]);
+
+        $this->getJson('/api/v1/inventory/batches')
+            ->assertOk()
+            ->assertJsonPath('meta.expiry_alerts.expired_units', 2)
+            ->assertJsonPath('meta.expiry_alerts.expiring_units', 3);
+    }
+
     public function test_pharmacy_medicine_details_are_tenant_configured_and_prescription_sales_are_blocked(): void
     {
         [$user, $business] = $this->createBusinessContext();
